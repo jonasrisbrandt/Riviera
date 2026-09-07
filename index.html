@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <meta name="theme-color" content="#8dbfc4" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Riviera — en liten plats vid havet</title>
+  </head>
+  <body>
+    <canvas
+      id="world"
+      aria-label="Bygg din kustby. Klicka för att bygga, högerklicka för att ta bort, dra för att rotera."
+    ></canvas>
+    <header>
+      <div class="brand">riviera<span>EN LITEN PLATS VID HAVET</span></div>
+      <div class="top-actions">
+        <button
+          id="sound"
+          class="round"
+          title="Slå på havsljud"
+          aria-label="Slå på havsljud"
+        ></button
+        ><button
+          id="settings"
+          class="round"
+          title="Ljus och inställningar"
+          aria-label="Ljus och inställningar"
+        ></button
+        ><button id="help" class="round" title="Så bygger du" aria-label="Så bygger du">?</button>
+      </div>
+    </header>
+    <aside class="palette" aria-label="Husfärger">
+      <span class="palette-label">FÄRG</span>
+      <div id="colors"></div>
+      <div class="palette-rule"></div>
+      <button
+        id="stone"
+        class="swatch stone"
+        title="Sten och kaj"
+        aria-label="Sten och kaj"
+      ></button>
+    </aside>
+    <div id="color-name" class="color-name">Terrakotta</div>
+    <section id="settings-panel" class="panel hidden">
+      <div class="panel-head">
+        En stund vid havet<button class="close" aria-label="Stäng inställningar">×</button>
+      </div>
+      <label>Solljus <span id="time-label">Eftermiddag</span></label
+      ><input id="sun" aria-label="Tid på dagen" type="range" min="0" max="100" value="62" />
+      <div class="setting">
+        <label for="ao">Ambient occlusion</label><input id="ao" type="checkbox" checked />
+      </div>
+      <div class="setting">
+        <label for="shadows">Skuggor</label><input id="shadows" type="checkbox" checked />
+      </div>
+      <div class="setting">
+        <label for="grid">Visa rutnät</label><input id="grid" type="checkbox" />
+      </div>
+      <label class="quality-label"
+        >Bildkvalitet<select id="quality">
+          <option value="1">Lätt</option>
+          <option value="1.5" selected>Hög</option>
+          <option value="2">Extra hög</option>
+        </select></label
+      >
+      <div class="panel-actions">
+        <button id="export">Spara by</button><button id="import">Öppna by</button>
+      </div>
+      <input id="file" type="file" accept=".json" hidden /><button id="new" class="text-button">
+        Börja med ett tomt hav
+      </button>
+    </section>
+    <section id="help-panel" class="panel hidden">
+      <div class="panel-head">
+        En by, ett klick i taget<button class="close" aria-label="Stäng hjälp">×</button>
+      </div>
+      <p>Inga poäng. Inga måsten. Bara din egen lilla kustby.</p>
+      <dl>
+        <dt>Klicka på havet</dt>
+        <dd>Lägg den första stenen</dd>
+        <dt>Klicka på ett tak</dt>
+        <dd>Bygg en våning till</dd>
+        <dt>Klicka på en vägg</dt>
+        <dd>Låt byn växa åt sidan</dd>
+        <dt>Högerklick / suddgummi</dt>
+        <dd>Ta bort ett block</dd>
+        <dt>Dra / två fingrar</dt>
+        <dd>Vrid kameran</dd>
+        <dt>Skrolla / nyp</dt>
+        <dd>Kom närmare</dd>
+        <dt>Shift + dra / mittknapp</dt>
+        <dd>Flytta kameran</dd>
+        <dt>Ctrl + Z / Ctrl + Shift + Z</dt>
+        <dd>Ångra / gör om</dd>
+      </dl>
+      <p class="small">
+        Husens tak, fönster, balkonger och valv växer fram automatiskt. Din by sparas på den här
+        enheten.
+      </p>
+    </section>
+    <div id="toast" role="status"></div>
+    <div class="bottom">
+      <div class="location">
+        <span class="location-mark">◈</span>
+        <div>La dolce vita<span id="town-count">DIN EGEN BIT AV RIVIERAN</span></div>
+      </div>
+      <nav class="toolbar" aria-label="Byggverktyg">
+        <button id="build" class="active" title="Bygg (B)" aria-label="Bygg"></button
+        ><button id="erase" title="Ta bort (E)" aria-label="Ta bort"></button><i></i
+        ><button id="undo" title="Ångra (Ctrl+Z)" aria-label="Ångra"></button
+        ><button id="redo" title="Gör om (Ctrl+Shift+Z)" aria-label="Gör om"></button><i></i
+        ><button id="home" title="Centrera byn (H)" aria-label="Centrera byn"></button
+        ><button id="photo" title="Ta ett vykort" aria-label="Ta ett vykort"></button>
+      </nav>
+      <div class="hint">
+        <span class="mouse-icon"></span
+        ><span>Klicka för att bygga<span>Dra för att upptäcka</span></span>
+      </div>
+    </div>
+    <div id="welcome">
+      <span>BENVENUTO A</span>
+      <h1>riviera</h1>
+      <p>En liten plats vid havet. Helt din.</p>
+    </div>
+    <div id="fatal" class="hidden"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

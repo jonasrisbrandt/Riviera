@@ -1,0 +1,29 @@
+{
+  "name": "riviera",
+  "version": "1.0.0",
+  "description": "A WebGPU village-building toy inspired by Italy's Cinque Terre.",
+  "private": true,
+  "homepage": "https://jonasrisbrandt.github.io/Riviera/",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test --test-isolation=none tests/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.3.0",
+    "@fontsource/italiana": "^5.3.0",
+    "delaunator": "^5.1.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "prettier": "^3.9.6",
+    "vite": "^8.2.2"
+  }
+}
