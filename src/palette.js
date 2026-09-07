@@ -1,0 +1,30 @@
+export const PALETTE = [
+  '#d77c58',
+  '#e4ac66',
+  '#efd39a',
+  '#d89b87',
+  '#cb6755',
+  '#e9c3a2',
+  '#a9b7a0',
+  '#8aadae',
+  '#e3b460',
+  '#dca9a4',
+  '#f0e6cb',
+  '#7e9995',
+];
+export const COLOR_NAMES = [
+  'Terrakotta',
+  'Aprikos',
+  'Ockra',
+  'Rosenputs',
+  'Korall',
+  'Sandsten',
+  'Salvia',
+  'Havsblå',
+  'Solgul',
+  'Gammelrosa',
+  'Kalkvit',
+  'Oliv',
+];
+export const FLOOR = 1.16,
+  BASE = 0.4;

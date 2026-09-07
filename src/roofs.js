@@ -1,3 +1,5 @@
+import { profiler } from './profiler.js';
+import { SpatialIndex } from './spatial.js';
 export const ROOF_EAVE = 0.065;
 export const ROOF_PITCH = 0.78;
 const OVERHANG = 0.085;
@@ -13,7 +15,7 @@ function closest(edge, x, z) {
 }
 
 /** One distance field per connected roof, rather than one pyramid per building cell. */
-export function planRoofs(cells, town) {
+export function planRoofs(cells, town, previous = new Map()) {
   const plans = new Map(),
     seen = new Set();
   for (const [id, levels] of town)
@@ -36,6 +38,24 @@ export function planRoofs(cells, town) {
             seen.add(n * 32 + level);
             queue.push(n);
           }
+      }
+      const signature =
+        level +
+        ':' +
+        members
+          .map((c) => c.id)
+          .sort((a, b) => a - b)
+          .join(',') +
+        '/' +
+        members
+          .slice()
+          .sort((a, b) => a.id - b.id)
+          .flatMap((c) => c.neighbors.map((n) => (town.get(n)?.[level] != null ? 1 : 0)))
+          .join('');
+      const reused = previous.get(signature);
+      if (reused) {
+        for (const c of members) plans.set(c.id * 32 + level, reused);
+        continue;
       }
       const ids = new Set(members.map((c) => c.id)),
         raw = [],
@@ -138,7 +158,9 @@ export function planRoofs(cells, town) {
           z1: Math.max(...p.map((v) => v[1])),
         };
       });
+      const boundsIndex = new SpatialIndex(bounds);
       const plan = {
+        signature,
         level,
         ids,
         points,
@@ -146,7 +168,7 @@ export function planRoofs(cells, town) {
         sample,
         patches: new Map(),
         surfaceHeight(x, z) {
-          for (const b of bounds) {
+          for (const b of boundsIndex.at(x, z)) {
             if (x < b.x0 - 1e-7 || x > b.x1 + 1e-7 || z < b.z0 - 1e-7 || z > b.z1 + 1e-7) continue;
             const height = roofPatch(b.cell, plan).surfaceHeight(x, z);
             if (height !== null) return height;
@@ -163,6 +185,7 @@ export function planRoofs(cells, town) {
 export function roofPatch(cell, plan, steps = 10) {
   const cacheKey = cell.id * 128 + steps;
   if (plan.patches.has(cacheKey)) return plan.patches.get(cacheKey);
+  const scope = profiler.begin('build.roofTessellation');
   const p = cell.vertices.map((v) => plan.points.get(v)),
     grid = [];
   for (let j = 0; j <= steps; j++) {
@@ -265,13 +288,14 @@ export function roofPatch(cell, plan, steps = 10) {
       z1: Math.max(a.z, b.z, c.z),
     };
   });
+  const faceIndex = new SpatialIndex(faces, 0.25);
   const patch = {
     triangles,
     ridges,
     maxHeight: Math.max(...triangles.flatMap((t) => t.vertices.map((v) => v.height))),
     edges: plan.edges.filter((e) => e.cell === cell.id),
     surfaceHeight(x, z) {
-      for (const { a, b, c, det, x0, x1, z0, z1 } of faces) {
+      for (const { a, b, c, det, x0, x1, z0, z1 } of faceIndex.at(x, z)) {
         if (x < x0 - 1e-7 || x > x1 + 1e-7 || z < z0 - 1e-7 || z > z1 + 1e-7) continue;
         const u = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / det;
         const v = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / det;
@@ -282,11 +306,14 @@ export function roofPatch(cell, plan, steps = 10) {
     },
   };
   plan.patches.set(cacheKey, patch);
+  profiler.end(scope);
   return patch;
 }
 
 /** Low rounded caps embedded into the actual mesh, including both skirts. */
 export function ridgeCapQuads(patch, plan) {
+  if (patch.caps) return patch.caps;
+  const scope = profiler.begin('build.ridgeCaps');
   const quads = [];
   for (const [a, b] of patch.ridges) {
     const dx = b.x - a.x,
@@ -316,5 +343,7 @@ export function ridgeCapQuads(patch, plan) {
       previous = row;
     }
   }
+  profiler.end(scope);
+  patch.caps = quads;
   return quads;
 }

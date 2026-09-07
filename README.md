@@ -43,10 +43,11 @@ Lokala sparningar hör till webbadressen. För att flytta en by från localhost 
 - Delaunay-triangulering, matchning av trianglar, uppdelning till fyrhörningar och avslappning ger ett sammanhängande oregelbundet rutnät med varierande vertexvalens.
 - Grannregler tar bort interna väggar, kopplar ihop tak och skapar kajkanter, valv, planteringar och detaljer.
 - Sammanhängande tak på samma höjd delar ett gemensamt avståndsfält, mjuka takfall och rundade nockpannor. Pannornas rader, färgvariation och relief beräknas i GPU-shadern.
-- Tre sammanslagna geometrier för puts, tak och sten; GPU-instansiering för fönster, fönsterluckor, balkonger, träd och övriga detaljer. Startbyn använder sex geometriritningar för dessa kategorier, utöver vatten, båtar, fåglar och efterbehandling.
+- Inkrementella områden om 12 × 12 världsenheter, med materialbatcher och GPU-instansiering. Startbyn har fem aktiva områden. Oförändrade geometrier, instansbuffertar och sökträd återanvänds. Instansmatriser genereras med WebGPU-compute enbart när ett område ändras.
 - Vattenrörelser, skum, puts-/tegelmönster, fåglar och bygganimationer körs i GPU-shaders.
 - Ground Truth Ambient Occlusion (GTAO) i halv upplösning, kantmedveten brusreducering, PCF-solskuggor och filmisk tonmappning. Skuggkartan uppdateras vid byggande, bygganimation och ändrat solljus.
-- CPU:n hanterar inmatning, träfftestning, sparning och geometriändringar vid byggande. Inget nät byggs om i den vanliga renderloopen.
+- En worker hanterar byggregler, takgeometri, typade attributbuffertar och BVH. Ändrade celler, hörngrannar och påverkade takkomponenter byggs om. Main thread sköter inmatning, BVH-träfftestning och applicering av överförda områden; den väntar inte på geometrigenereringen. Föråldrade workersvar förkastas och senare svar innehåller alla ej kvitterade områden.
+- BufferGeometry och instansbuffertar växer vid behov och återanvänds. Resurser från samtliga renderpass frigörs vid borttagning. Three.js är låst till 0.185.1; kompatibilitetslagret i render-resources.js behöver verifieras vid versionsbyte.
 
 Rutnätet är ändligt (ungefär 74 enheter i diameter) och höjden begränsad till 24 husvåningar. Det är en egen tolkning av byggsystemet; originalets fullständiga regelbibliotek och alla dess specialformer är inte återskapade.
 
@@ -59,9 +60,13 @@ node scripts/interaction.mjs
 node scripts/roof-supports.mjs
 node scripts/advanced.mjs
 node scripts/surface-artifacts.mjs
+npm run test:optimized
+node scripts/build-frames.mjs
 ```
 
 Webbläsartestet kräver lokal Chrome, en körande Vite-server på port 5173 och tillåtelse att starta en isolerad webbläsarprocess. Det testar WebGPU, klickbyggande, färgval, borttagning, historik, autosparning, import/export och PNG. Bilder och rapporter skrivs till `artifacts/`.
+
+`scripts/build-frames.mjs` körs mot Vite-utvecklingsservern. Det fångar WebGPU-bilden efter varje renderad ruta under byggande, rivning och ångra/gör om, även med 200 ms fördröjda workersvar. Oförändrade hus jämförs pixelvis för att upptäcka tillfälliga färg- eller geometriblinkningar. Teståtkomsten injiceras endast i den isolerade webbläsaren.
 
 `window.riviera.stats` ger läsbar diagnostik över backend, FPS, celler, block och instanser. FPS-resultat beror på GPU, fönsterstorlek och kvalitetsval.
 
@@ -71,3 +76,23 @@ Webbläsartestet kräver lokal Chrome, en körande Vite-server på port 5173 och
 - [Vernazza, Italia.it](https://www.italia.it/en/liguria/la-spezia/vernazza)
 - [Three.js WebGPU](https://threejs.org/manual/en/webgpurenderer)
 - [Three.js WebGPU postprocessing](https://threejs.org/manual/en/webgpu-postprocessing.html)
+
+## Prestandamätning
+
+Tryck **F3** för mätpanelen. Ny mätning nollställer statistiken; Stoppa avslutar insamlingen; Spara JSON exporterar samtliga mätserier. F3 döljer panelen utan att stoppa en pågående mätning. Lägg till `?profile` i URL:en för att även mäta uppstarten. Vanlig start har profileringen avstängd.
+
+CPU-tider visar både inklusive tid (`cpu.*`) och egen tid utan underanrop (`self.*`). GPU-tider kommer från WebGPU-tidsstämplar för verkliga render-/compute-pass, med asynkron avläsning var tredje bildruta samt vid geometriändringar. Enheter utan `timestamp-query` får CPU-mätning och en tydlig upplysning om saknade GPU-tider. Slutpasset innehåller även AO-brusreduceringen. Små tider kan avrundas till noll av webbläsaren.
+
+Reproducerbar mätning med isolerad Chrome och produktionsbygget:
+
+```sh
+npm run build
+npm run preview -- --port 4173
+# I en annan terminal:
+npm run profile
+node scripts/profile-validation.mjs
+```
+
+`RIVIERA_URL` kan ange en annan server som innehåller mätkoden. Skripten använder egna webbläsarprofiler och ändrar inte din sparade by. Rådata och kontrollmätningar sparas i `artifacts/performance.json` respektive `artifacts/performance-controls.json`. De omfattar startby, större by, sammanhängande tak, pekrörelser, kamera, bygg/ångra, AO, upplösning och minneskontroll med profileringen avstängd.
+
+Se [resultat efter optimering 1–4](docs/optimization-2026-09-07.md) och [den ursprungliga genomgången](docs/performance-2026-09-07.md). Anropa await window.riviera.ready() för att vänta på den senaste geometriversionen i automatiska kontroller. Mätpanelen skiljer huvudtrådens tillämpning, worker-tid och bygglatens; async.build.firstFrameSubmitted mäter till första inskickade bildrutan, exklusive skärmens presentation. Diagnostik-API: `window.riviera.profiling.start(label, { gpuEvery: 3 })`, `snapshot()` och `await stop()`. `experiment({ aoMode: "raw" | "off" | "full", pixelRatio: 1 })` är enbart för isolerade jämförelser; ladda om sidan för att återställa alla bildinställningar efter egna experiment.

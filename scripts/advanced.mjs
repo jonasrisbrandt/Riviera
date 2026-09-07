@@ -89,7 +89,8 @@ try {
   const largeStats = await page.evaluate(() => window.riviera.stats);
   await page.screenshot({ path: 'artifacts/large-town.png' });
   assert.equal(largeStats.cells, large.size);
-  assert.equal(largeStats.draws, 6);
+  assert.ok(largeStats.draws <= largeStats.chunks * 6);
+  assert.ok(largeStats.draws < 120, 'bounded chunk draw count');
   assert.deepEqual(errors, []);
   const report = {
     passed: [

@@ -1,4 +1,5 @@
 import * as T from 'three/webgpu';
+import { profiler } from './profiler.js';
 import {
   positionWorld,
   time,
@@ -34,6 +35,7 @@ export function environment(scene, renderer, camera, cells) {
   const sun = new T.DirectionalLight('#fff0ce', 3.3);
   sun.position.set(-16, 25, 12);
   sun.castShadow = true;
+  sun.shadow.camera.name = 'shadow-map';
   sun.shadow.mapSize.set(2048, 2048);
   Object.assign(sun.shadow.camera, {
     left: -23,
@@ -123,6 +125,8 @@ export function environment(scene, renderer, camera, cells) {
     }
     ctx.restore();
     mask.needsUpdate = true;
+  }
+  function updateBounds(town) {
     let extent = 18;
     for (const id of town.keys()) extent = Math.max(extent, Math.hypot(...cells[id].center) + 7);
     Object.assign(sun.shadow.camera, {
@@ -184,6 +188,7 @@ export function environment(scene, renderer, camera, cells) {
   // Editor helpers must never write to the world's normal/depth attachments:
   // transparent normals otherwise make GTAO invent dark edges on the water.
   const overlayScene = new T.Scene();
+  overlayScene.name = 'editor';
   const overlayPass = pass(overlayScene, camera, { depthBuffer: false });
   overlayPass.renderTarget.samples = 4;
   renderer.setClearColor(0x000000, 0);
@@ -214,12 +219,29 @@ export function environment(scene, renderer, camera, cells) {
   const aoStrength = uniform(1);
   const occluded = rgb.mul(vec4(vec3(clean.r), 1));
   pipeline.outputNode = withOverlays(occluded);
-  function setAO(enabled) {
+  function setAO(...args) {
+    return profiler.measure('settings.ao', () => setAOWork(...args));
+  }
+  function setAOWork(enabled) {
     aoStrength.value = enabled ? 1 : 0;
     pipeline.outputNode = withOverlays(enabled ? occluded : rgb);
     pipeline.needsUpdate = true;
   }
-  function daylight(value) {
+  function profileVariant({ aoMode = 'full', denoiseRadius = 3 } = {}) {
+    clean.radius.value = denoiseRadius;
+    const shade =
+      aoMode === 'raw'
+        ? rgb.mul(vec4(vec3(aoPass.getTextureNode().r), 1))
+        : aoMode === 'off'
+          ? rgb
+          : occluded;
+    pipeline.outputNode = withOverlays(shade);
+    pipeline.needsUpdate = true;
+  }
+  function daylight(...args) {
+    return profiler.measure('settings.daylight', () => daylightWork(...args));
+  }
+  function daylightWork(value) {
     const t = value / 100;
     sun.position.set(-22 + 34 * t, 8 + Math.sin(t * Math.PI) * 25, 18);
     sun.color.set(t > 0.78 ? '#ffbe84' : t < 0.2 ? '#ffdfb2' : '#fff0d5');
@@ -234,8 +256,10 @@ export function environment(scene, renderer, camera, cells) {
     pipeline,
     aoStrength,
     setAO,
+    profileVariant,
     addOverlay,
     updateShore,
+    updateBounds,
     daylight,
     boats,
   };

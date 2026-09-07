@@ -11,6 +11,9 @@ import { makeGrid, demoTown, inside, top } from './grid.js';
 import { Architecture, PALETTE, COLOR_NAMES, BASE, FLOOR } from './architecture.js';
 import { environment } from './environment.js';
 import { SAVE_KEY, serialize, deserialize, History } from './state.js';
+import { profiler } from './profiler.js';
+import { mountProfiler } from './profiler-ui.js';
+import { SpatialIndex } from './spatial.js';
 const $ = (id) => document.getElementById(id);
 const icons = {
   build: '<path d="m3 10 9-7 9 7M5 9v12h14V9M10 21v-7h4v7"/>',
@@ -27,7 +30,10 @@ const icons = {
 for (const [id, path] of Object.entries(icons))
   $(id).innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
 let toastTimer;
-function toast(text) {
+function toast(...args) {
+  return profiler.measure('ui.toast', () => toastWork(...args));
+}
+function toastWork(text) {
   $('toast').textContent = text;
   $('toast').classList.add('show');
   clearTimeout(toastTimer);
@@ -44,11 +50,13 @@ async function init() {
     alpha: false,
     powerPreference: 'high-performance',
   });
-  await renderer.init();
+  await profiler.measureAsync('startup.rendererInit', () => renderer.init());
   if (!renderer.backend.isWebGPUBackend)
     throw new Error(
       'WebGPU kunde inte starta. Kontrollera att hårdvaruacceleration är påslagen i webbläsaren.',
     );
+  profiler.attachRenderer(renderer);
+  const startupScope = profiler.begin('startup.sceneSetup');
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   renderer.setSize(innerWidth, innerHeight);
   renderer.toneMapping = T.ACESFilmicToneMapping;
@@ -77,45 +85,86 @@ async function init() {
   controls.maxZoom = 4.5;
   controls.mouseButtons = { LEFT: T.MOUSE.ROTATE, MIDDLE: T.MOUSE.PAN, RIGHT: T.MOUSE.ROTATE };
   controls.update();
-  const { cells } = makeGrid();
-  let town = demoTown(cells);
+  scene.name = 'world';
+  const { cells } = profiler.measure('startup.grid', () => makeGrid());
+  let town = profiler.measure('startup.demoTown', () => demoTown(cells));
   try {
-    const saved = localStorage.getItem(SAVE_KEY);
-    if (saved) town = deserialize(saved, cells.length);
+    const saved = profiler.measure('storage.read', () => localStorage.getItem(SAVE_KEY));
+    if (saved)
+      town = profiler.measure('storage.deserialize', () => deserialize(saved, cells.length));
   } catch {
     toast('Din tidigare sparning kunde inte läsas. En ny hamn är redo.');
   }
-  const architecture = new Architecture(scene, cells);
-  const env = environment(scene, renderer, camera, cells);
+  const architecture = profiler.measure(
+    'startup.architecture',
+    () => new Architecture(scene, cells, renderer),
+  );
+  const env = profiler.measure('startup.environment', () =>
+    environment(scene, renderer, camera, cells),
+  );
   const history = new History();
+  for (const key of ['push', 'undo', 'redo']) profiler.wrap(history, key, 'history.' + key);
+  profiler.wrap(architecture, 'rebuild', 'build.architecture');
+  profiler.wrap(env, 'updateShore', 'build.shoreMask');
   let selected = 0,
     mode = 'build',
     hover = null,
     dirty = true,
     soundOn = false,
     soundContext = null;
-  function rebuild() {
-    architecture.rebuild(town);
-    env.updateShore(town);
+  let shoreSignature = null;
+  function rebuild(...args) {
+    return profiler.measure('build.total', () => rebuildWork(...args));
+  }
+  function rebuildWork(animation = null) {
+    const work = architecture.rebuild(town, animation);
+    const signature = [...town]
+      .filter(([, l]) => l[0] != null)
+      .map(([id]) => id)
+      .sort((a, b) => a - b)
+      .join(',');
+    if (signature !== shoreSignature) {
+      env.updateShore(town);
+      shoreSignature = signature;
+    }
+    env.updateBounds(town);
     env.boats.visible = town.size > 20;
+    const uiScope = profiler.begin('build.ui');
     $('town-count').textContent = `${town.size} PLATSER · ${architecture.stats.floors} VÅNINGAR`;
     $('undo').disabled = !history.past.length;
     $('redo').disabled = !history.future.length;
+    profiler.end(uiScope);
     try {
-      localStorage.setItem(SAVE_KEY, serialize(town));
+      const json = profiler.measure('storage.serialize', () => serialize(town));
+      profiler.measure('storage.write', () => localStorage.setItem(SAVE_KEY, json));
     } catch {
       toast('Det gick inte att autospara. Använd Spara by i inställningarna.');
     }
     dirty = true;
+    return work;
   }
-  rebuild();
+  const initialBuild = rebuild();
+  profiler.end(startupScope);
+  await initialBuild;
+  const uiStartupScope = profiler.begin('startup.ui');
+  architecture.onCommit = () => {
+    dirty = true;
+    env.sun.shadow.needsUpdate = true;
+  };
+  architecture.onError = (error) => {
+    console.error(error);
+    toast('Bygget kunde inte färdigställas. Ladda om sidan och försök igen.');
+  };
   const lineMat = new T.LineBasicNodeMaterial({
     color: '#ffefcf',
     transparent: true,
     opacity: 0.9,
     depthTest: true,
   });
-  let highlight = new T.LineSegments(new T.BufferGeometry(), lineMat);
+  let highlight = new T.LineSegments(
+    new T.BufferGeometry().setAttribute('position', new T.BufferAttribute(new Float32Array(48), 3)),
+    lineMat,
+  );
   env.addOverlay(highlight, 2);
   const ghostMat = new T.MeshBasicNodeMaterial({
     color: PALETTE[0],
@@ -124,7 +173,10 @@ async function init() {
     depthWrite: false,
     side: T.DoubleSide,
   });
-  const ghost = new T.Mesh(new T.BufferGeometry(), ghostMat);
+  const ghost = new T.Mesh(
+    new T.BufferGeometry().setAttribute('position', new T.BufferAttribute(new Float32Array(72), 3)),
+    ghostMat,
+  );
   env.addOverlay(ghost, 1);
   const gridPoints = [];
   for (const c of cells)
@@ -211,16 +263,29 @@ async function init() {
     pointer = new T.Vector2(10, 10),
     plane = new T.Plane(new T.Vector3(0, 1, 0), 0),
     hitPoint = new T.Vector3();
-  function pick(remove = false) {
-    ray.setFromCamera(pointer, camera);
-    const hits = ray.intersectObjects(architecture.pickMeshes, false);
-    if (hits.length) {
-      const hit = hits[0],
-        meta = hit.object.userData.faces[hit.faceIndex];
+  const cellIndex = new SpatialIndex(
+    cells.map((c) => ({
+      cell: c,
+      x0: Math.min(...c.points.map((p) => p[0])),
+      x1: Math.max(...c.points.map((p) => p[0])),
+      z0: Math.min(...c.points.map((p) => p[1])),
+      z1: Math.max(...c.points.map((p) => p[1])),
+    })),
+  );
+  function pick(...args) {
+    return profiler.measure('input.pick', () => pickWork(...args));
+  }
+  function pickWork(remove = false, requestedRay = null, paint = selected) {
+    if (!requestedRay && (Math.abs(pointer.x) > 1 || Math.abs(pointer.y) > 1)) return null;
+    if (!requestedRay) ray.setFromCamera(pointer, camera);
+    const pickingRay = requestedRay || ray.ray;
+    const hit = profiler.measure('input.raycast', () => architecture.raycast(pickingRay));
+    if (hit) {
+      const meta = hit.meta;
       if (!meta) return null;
       let { id, level, edge } = meta;
       if (remove) return { id, level };
-      if (selected === -1) {
+      if (paint === -1) {
         if (edge >= 0) id = cells[id].neighbors[edge];
         else if (level === 0) return null;
         return id >= 0 && town.get(id)?.[0] == null ? { id, level: 0 } : null;
@@ -233,21 +298,31 @@ async function init() {
       return { id, level };
     }
     if (remove) return null;
-    if (ray.ray.intersectPlane(plane, hitPoint)) {
-      const cell = cells.find(
-        (c) =>
-          Math.abs(c.center[0] - hitPoint.x) < 2 &&
-          Math.abs(c.center[1] - hitPoint.z) < 2 &&
-          inside([hitPoint.x, hitPoint.z], c.points),
+    if (pickingRay.intersectPlane(plane, hitPoint)) {
+      const cell = profiler.measure(
+        'input.gridSearch',
+        () =>
+          cellIndex
+            .at(hitPoint.x, hitPoint.z)
+            .find(({ cell: c }) => inside([hitPoint.x, hitPoint.z], c.points))?.cell,
       );
       if (cell && town.get(cell.id)?.[0] == null) return { id: cell.id, level: 0 };
     }
     return null;
   }
-  function updateHover() {
+  let lastHoverKey = '';
+  function updateHover(...args) {
+    return profiler.measure('input.hover', () => updateHoverWork(...args));
+  }
+  function updateHoverWork() {
+    if (architecture.pending || dragging) {
+      highlight.visible = ghost.visible = false;
+      return;
+    }
     hover = pick(mode === 'erase');
     highlight.visible = ghost.visible = !!hover;
     if (!hover) return;
+    const geometryScope = profiler.begin('input.hoverGeometry');
     const c = cells[hover.id],
       // Include a selected roof even when neighbors hide the walls beneath it.
       roofMargin =
@@ -256,6 +331,12 @@ async function init() {
           : 0.02,
       y = hover.level === 0 ? BASE + 0.018 : BASE + hover.level * FLOOR + roofMargin,
       bottom = hover.level === 0 ? 0.01 : BASE + (hover.level - 1) * FLOOR + 0.02;
+    const hoverKey = [hover.id, hover.level, roofMargin, mode, selected].join(':');
+    if (hoverKey === lastHoverKey) {
+      profiler.end(geometryScope);
+      return;
+    }
+    lastHoverKey = hoverKey;
     const lines = [],
       tri = [];
     for (let e = 0; e < 4; e++) {
@@ -283,21 +364,21 @@ async function init() {
         b[1],
       );
     }
-    highlight.geometry.dispose();
-    highlight.geometry = new T.BufferGeometry().setAttribute(
-      'position',
-      new T.Float32BufferAttribute(lines, 3),
-    );
-    ghost.geometry.dispose();
-    ghost.geometry = new T.BufferGeometry().setAttribute(
-      'position',
-      new T.Float32BufferAttribute(tri, 3),
-    );
+    highlight.geometry.attributes.position.array.set(lines);
+    ghost.geometry.attributes.position.array.set(tri);
+    highlight.geometry.attributes.position.needsUpdate =
+      ghost.geometry.attributes.position.needsUpdate = true;
+    highlight.geometry.computeBoundingSphere();
+    ghost.geometry.computeBoundingSphere();
     const col = mode === 'erase' ? '#f58973' : selected === -1 ? '#eae2c6' : PALETTE[selected];
     lineMat.color.set(mode === 'erase' ? '#fa8975' : '#fff1ca');
     ghostMat.color.set(col);
+    profiler.end(geometryScope);
   }
-  function plop(remove) {
+  function plop(...args) {
+    return profiler.measure('audio.plop', () => plopWork(...args));
+  }
+  function plopWork(remove) {
     if (!soundOn || !soundContext) return;
     const o = soundContext.createOscillator(),
       g = soundContext.createGain();
@@ -310,8 +391,26 @@ async function init() {
     o.start();
     o.stop(soundContext.currentTime + 0.2);
   }
-  function edit(remove = false) {
-    const target = pick(remove);
+  function edit(...args) {
+    return profiler.measure('input.edit', () => editWork(...args));
+  }
+  let editGeneration = 0;
+  function editWork(remove = false, requestedRay = null, paint = selected) {
+    if (!requestedRay) {
+      ray.setFromCamera(pointer, camera);
+      requestedRay = ray.ray.clone();
+    }
+    if (architecture.pending) {
+      const generation = editGeneration;
+      architecture
+        .ready()
+        .then(() => {
+          if (generation === editGeneration) edit(remove, requestedRay, paint);
+        })
+        .catch(() => {});
+      return;
+    }
+    const target = pick(remove, requestedRay, paint);
     if (!target) return;
     history.push(town);
     const levels = town.get(target.id)?.slice() || [];
@@ -322,19 +421,21 @@ async function init() {
       else town.delete(target.id);
     } else {
       while (levels.length <= target.level) levels.push(null);
-      levels[target.level] = target.level === 0 ? 0 : Math.max(0, selected);
+      levels[target.level] = target.level === 0 ? 0 : Math.max(0, paint);
       town.set(target.id, levels);
-      architecture.animate(target.id, target.level);
     }
-    rebuild();
+    rebuild(remove ? null : { id: target.id, level: target.level }).catch(() => {});
     plop(remove);
     updateHover();
   }
+  let dragging = false;
   let start = null,
     activePointers = new Set(),
     multiTouch = false;
   const canvas = renderer.domElement;
   const pointerFrom = (e) => {
+    if (start && activePointers.size && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6)
+      dragging = true;
     const r = canvas.getBoundingClientRect();
     pointer.set(
       ((e.clientX - r.left) / r.width) * 2 - 1,
@@ -370,12 +471,14 @@ async function init() {
     if (!activePointers.size) {
       multiTouch = false;
       start = null;
+      dragging = false;
     }
   });
   canvas.addEventListener('pointercancel', (e) => {
     activePointers.delete(e.pointerId);
     start = null;
     multiTouch = false;
+    dragging = false;
   });
   canvas.addEventListener('pointerleave', () => {
     pointer.set(10, 10);
@@ -386,14 +489,19 @@ async function init() {
   $('build').onclick = () => setMode('build');
   $('erase').onclick = () => setMode('erase');
   $('undo').onclick = () => {
+    editGeneration++;
     town = history.undo(town, cells.length);
-    rebuild();
+    rebuild().catch(() => {});
   };
   $('redo').onclick = () => {
+    editGeneration++;
     town = history.redo(town, cells.length);
-    rebuild();
+    rebuild().catch(() => {});
   };
-  function home() {
+  function home(...args) {
+    return profiler.measure('input.home', () => homeWork(...args));
+  }
+  function homeWork() {
     const list = [...town.keys()].map((id) => cells[id].center);
     let x = 0,
       z = 0;
@@ -438,7 +546,10 @@ async function init() {
     $('time-label').textContent =
       e.target.value < 28 ? 'Morgon' : e.target.value > 78 ? 'Gyllene timmen' : 'Eftermiddag';
   };
-  function download(blob, name) {
+  function download(...args) {
+    return profiler.measure('export.download', () => downloadWork(...args));
+  }
+  function downloadWork(blob, name) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -455,10 +566,12 @@ async function init() {
     if (!f) return;
     try {
       if (f.size > 2_000_000) throw Error();
-      const loaded = deserialize(await f.text(), cells.length);
+      const text = await profiler.measureAsync('import.fileRead', () => f.text());
+      const loaded = profiler.measure('storage.deserialize', () => deserialize(text, cells.length));
+      editGeneration++;
       history.push(town);
       town = loaded;
-      rebuild();
+      await rebuild();
       home();
       toast('Välkommen tillbaka till din by');
     } catch {
@@ -467,9 +580,10 @@ async function init() {
     e.target.value = '';
   };
   $('new').onclick = () => {
+    editGeneration++;
     history.push(town);
     town = new Map();
-    rebuild();
+    rebuild().catch(() => {});
     home();
     $('settings-panel').classList.add('hidden');
     toast('Ett tomt hav. Klicka för att lägga den första stenen.');
@@ -479,6 +593,7 @@ async function init() {
     photoRequested = true;
   };
   $('sound').onclick = async () => {
+    const audioScope = profiler.begin('audio.setup');
     soundOn = !soundOn;
     if (!soundContext) {
       soundContext = new AudioContext();
@@ -504,6 +619,7 @@ async function init() {
       src.connect(filter).connect(gain).connect(soundContext.destination);
       src.start();
     }
+    profiler.end(audioScope);
     if (soundOn) await soundContext.resume();
     else await soundContext.suspend();
     $('sound').style.opacity = soundOn ? '1' : '.55';
@@ -536,23 +652,32 @@ async function init() {
   let frames = 0,
     lastFps = performance.now(),
     fps = 0;
+  profiler.end(uiStartupScope);
   renderer.setAnimationLoop(() => {
+    profiler.beginFrame(architecture.gpuPending.size > 0);
+    const frameScope = profiler.begin('frame');
+    architecture.flushGPU();
+    const animationScope = profiler.begin('frame.animationUniforms');
     architecture.clock.value = performance.now() / 1000;
     if (architecture.clock.value - architecture.started.value < 0.6)
       env.sun.shadow.needsUpdate = true;
-    controls.update();
+    profiler.end(animationScope);
+    profiler.measure('frame.controls', () => controls.update());
     if (dirty) {
       updateHover();
       dirty = false;
     }
+    const boatsScope = profiler.begin('frame.boats');
     env.boats.children.forEach((b, i) => {
       b.position.y = 0.016 + Math.sin(performance.now() * 0.0008 + i) * 0.023;
       b.rotation.z = Math.sin(performance.now() * 0.0007 + i) * 0.018;
     });
+    profiler.end(boatsScope);
     if (photoRequested) {
       highlight.visible = ghost.visible = false;
     }
-    env.pipeline.render();
+    profiler.measure('frame.render', () => env.pipeline.render());
+    architecture.markSubmitted();
     frames++;
     if (performance.now() - lastFps > 1000) {
       fps = (frames * 1000) / (performance.now() - lastFps);
@@ -561,18 +686,45 @@ async function init() {
     }
     if (photoRequested) {
       photoRequested = false;
+      const photoStart = performance.now(),
+        photoEpoch = profiler.epoch;
       canvas.toBlob((blob) => {
+        profiler.record('async.photoEncode', performance.now() - photoStart, photoEpoch);
         if (blob) download(blob, 'ett-vykort-fran-riviera.png');
       }, 'image/png');
       dirty = true;
       toast('Ett vykort från din Riviera');
     }
+    profiler.end(frameScope);
+    profiler.endFrame();
   });
-  // Read-only diagnostics used by the automated interaction checks.
+  // Diagnostics and opt-in controlled profiling experiments.
   window.riviera = {
+    ready: () => architecture.ready(),
+    verifyGPUInstances: () => architecture.verifyGPUInstances(),
+    profiling: {
+      start: (label, options) => profiler.start(label, options),
+      stop: () => profiler.stop(),
+      snapshot: () => ({ ...profiler.snapshot(), town: { ...architecture.stats } }),
+      experiment: (options) => {
+        if (!profiler.enabled) throw Error('Enable profiling first');
+        env.profileVariant(options);
+        if (options.pixelRatio !== undefined) {
+          renderer.setPixelRatio(options.pixelRatio);
+          renderer.setSize(innerWidth, innerHeight);
+        }
+        architecture.group.visible = options.buildings !== false;
+        env.water.visible = options.water !== false;
+        birdMesh.visible = options.birds !== false;
+        env.boats.visible = options.boats !== false && town.size > 20;
+      },
+    },
     get stats() {
       return {
         ...architecture.stats,
+        pending: architecture.pending,
+        revision: architecture.revision,
+        appliedRevision: architecture.appliedRevision,
         fps,
         backend: renderer.backend.isWebGPUBackend ? 'WebGPU' : 'unknown',
         ao: env.aoStrength.value,
@@ -585,12 +737,10 @@ async function init() {
     },
     projectCell(id, level = 0) {
       const c = cells[id];
-      const roof = architecture.roofPlans.get(id * 32 + level);
+      const roof = architecture.roofCenters.get(id * 32 + level);
       const p = new T.Vector3(
         c.center[0],
-        level === 0
-          ? BASE
-          : BASE + level * FLOOR + (roof ? roof.sample(...c.center).height - 0.08 : 0.25),
+        level === 0 ? BASE : BASE + level * FLOOR + (roof !== undefined ? roof - 0.08 : 0.25),
         c.center[1],
       ).project(camera);
       return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };
@@ -615,6 +765,7 @@ async function init() {
       }));
     },
   };
+  mountProfiler(profiler, () => window.riviera.profiling.snapshot());
 }
 init().catch((error) => {
   console.error(error);
