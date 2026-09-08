@@ -1,3 +1,5 @@
+import { makeGrid, demoTown } from '../src/grid.js';
+import { serialize } from '../src/state.js';
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -8,6 +10,10 @@ await mkdir('artifacts', { recursive: true });
 try {
   for (const delay of [0, 200]) {
     const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    await page.addInitScript(
+      (json) => localStorage.setItem('riviera-town-v1', json),
+      serialize(demoTown(makeGrid().cells)),
+    );
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => {

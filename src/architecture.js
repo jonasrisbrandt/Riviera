@@ -78,7 +78,8 @@ function materials() {
   );
   stone.colorNode = mix(color('#ffffff'), color('#8e978b'), mortar.mul(0.26));
   const detail = new T.MeshStandardNodeMaterial({ roughness: 0.85, vertexColors: true });
-  return { plaster, roof, stone, detail };
+  const land = new T.MeshStandardNodeMaterial({ roughness: 1, vertexColors: true });
+  return { plaster, roof, stone, detail, land };
 }
 
 import { ArchitectureView } from './architecture-view.js';

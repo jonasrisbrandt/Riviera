@@ -11,7 +11,7 @@ self.onmessage = ({ data }) => {
     else profiler.enabled = false;
     const started = performance.now();
     const result = profiler.measure('build.total', () =>
-      engine.build(new Map(data.town), new Map(data.ack)),
+      engine.build(new Map(data.town), new Map(data.ack), new Map(data.terrain || [])),
     );
     const elapsed = performance.now() - started;
     const metrics = data.profile ? profiler.snapshot().metrics : null;

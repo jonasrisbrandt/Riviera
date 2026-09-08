@@ -1,3 +1,5 @@
+import { buildTerrain, attachTerrain, emptyCell } from './terrain-builder.js';
+import { FLOOR } from './palette.js';
 import { planRoofs } from './roofs.js';
 import { buildCell } from './cell-builder.js';
 import { mergeGeometry, packInstances } from './geometry-data.js';
@@ -16,6 +18,7 @@ export class BuildEngine {
   constructor(cells) {
     this.cells = cells;
     this.town = new Map();
+    this.terrain = new Map();
     this.plans = new Map();
     this.cache = new Map();
     this.versions = new Map();
@@ -26,20 +29,57 @@ export class BuildEngine {
         this.vertexCells.get(v).push(c.id);
       }
   }
-  build(town, ack = new Map()) {
+  build(town, ack = new Map(), terrain = town.terrain || new Map()) {
     const dirty = new Set(),
-      ids = new Set([...town.keys(), ...this.town.keys()]);
+      ids = new Set([
+        ...town.keys(),
+        ...this.town.keys(),
+        ...terrain.keys(),
+        ...this.terrain.keys(),
+      ]);
     for (const id of ids) {
       const a = town.get(id),
         b = this.town.get(id);
-      if (a?.length === b?.length && a?.every((v, i) => v === b[i])) continue;
+      const ta = terrain.get(id),
+        tb = this.terrain.get(id);
+      const terrainSame = ta?.[0] === tb?.[0] && ta?.[1] === tb?.[1];
+      if (terrainSame && a?.length === b?.length && (!a || a.every((v, i) => v === b[i]))) continue;
       dirty.add(id);
       for (const v of this.cells[id].vertices)
         for (const n of this.vertexCells.get(v)) dirty.add(n);
     }
+    const groundLevel = (id) => terrain.get(id)?.[0] || 0;
+    // Roof connectivity is evaluated at absolute storeys, including differences in ground height.
+    const roofTown = terrain.size
+      ? new Map(
+          [...town].map(([id, levels]) => [
+            id,
+            [...Array(groundLevel(id)).fill(null), null, ...levels.slice(1)],
+          ]),
+        )
+      : town;
+    const perspectives = new Map();
+    const relativeTown = (offset) => {
+      if (!terrain.size) return town;
+      if (perspectives.has(offset)) return perspectives.get(offset);
+      const view = new Map();
+      for (const id of new Set([...town.keys(), ...terrain.keys()])) {
+        const levels = [],
+          ground = groundLevel(id),
+          source = town.get(id) || [];
+        for (let y = 0; y < ground + source.length; y++) {
+          const relative = y - offset;
+          levels[relative] = y < ground ? 0 : source[y - ground];
+        }
+        for (let y = 0; y < levels.length; y++) if (levels[y] === undefined) levels[y] = null;
+        view.set(id, levels);
+      }
+      perspectives.set(offset, view);
+      return view;
+    };
     const oldPlans = this.plans,
       cache = new Map([...new Set(oldPlans.values())].map((p) => [p.signature, p]));
-    const plans = profiler.measure('build.roofPlan', () => planRoofs(this.cells, town, cache));
+    const plans = profiler.measure('build.roofPlan', () => planRoofs(this.cells, roofTown, cache));
     // Component merges/splits and boundary exposure invalidate the entire affected roof.
     for (const [key, plan] of oldPlans)
       if (plans.get(key) !== plan) for (const id of plan.ids) dirty.add(id);
@@ -48,11 +88,41 @@ export class BuildEngine {
     const changedChunks = new Set();
     let rebuiltCells = 0;
     for (const id of dirty) {
-      if (!town.has(id) && !this.cache.has(id)) continue;
+      if (!town.has(id) && !terrain.has(id) && !this.cache.has(id)) continue;
       changedChunks.add(chunkKey(this.cells[id]));
-      if (town.has(id)) {
-        const data = buildCell(this.cells[id], this.cells, town, plans, this.vertexCells);
-        for (const kind of ['wall', 'roof', 'stone'])
+      if (town.has(id) || terrain.has(id)) {
+        const offset = groundLevel(id),
+          localPlans = new Map();
+        for (let y = 0; y < (town.get(id)?.length || 0); y++)
+          localPlans.set(id * 32 + y, plans.get(id * 32 + y + offset));
+        const data = town.has(id)
+          ? buildCell(
+              this.cells[id],
+              this.cells,
+              relativeTown(offset),
+              terrain.size ? localPlans : plans,
+              this.vertexCells,
+            )
+          : emptyCell(id);
+        if (offset && town.has(id)) {
+          for (const kind of ['wall', 'roof', 'stone']) {
+            const a = data[kind].attributes;
+            for (let i = 1; i < a.position.length; i += 3) a.position[i] += offset * FLOOR;
+            for (let i = 0; i < a.baseY.length; i++) a.baseY[i] += offset * FLOOR;
+          }
+          for (const list of Object.values(data.instances))
+            for (const instance of list) {
+              instance.p[1] += offset * FLOOR;
+              instance.base += offset * FLOOR;
+            }
+        }
+        attachTerrain(
+          data,
+          profiler.measure('build.terrain', () =>
+            buildTerrain(this.cells[id], this.cells, town, terrain),
+          ),
+        );
+        for (const kind of ['wall', 'roof', 'stone', 'land'])
           data[kind].bvh = profiler.measure('build.pickBVH', () =>
             buildBVH(data[kind].attributes.position),
           );
@@ -62,6 +132,7 @@ export class BuildEngine {
     }
     for (const key of changedChunks) this.versions.set(key, (this.versions.get(key) || 0) + 1);
     this.town = new Map([...town].map(([id, l]) => [id, l.slice()]));
+    this.terrain = new Map([...terrain].map(([id, value]) => [id, value.slice()]));
     this.plans = plans;
     const groups = new Map();
     for (const [id, cell] of this.cache) {
@@ -78,7 +149,7 @@ export class BuildEngine {
         continue;
       }
       const meshes = {};
-      for (const kind of ['wall', 'roof', 'stone']) {
+      for (const kind of ['wall', 'roof', 'stone', 'land']) {
         const data = profiler.measure('build.buffers.' + kind, () =>
           mergeGeometry(cells.map((c) => c[kind])),
         );
@@ -100,7 +171,7 @@ export class BuildEngine {
       for (const [key, height] of cell.roofHeights) {
         roofHeights.push([key, height]);
         const c = this.cells[Math.floor(key / 32)];
-        roofCenters.push([key, plans.get(key).sample(...c.center).height]);
+        roofCenters.push([key, plans.get(key + groundLevel(c.id)).sample(...c.center).height]);
       }
     const all = [...this.cache.values()];
     return {
@@ -109,6 +180,8 @@ export class BuildEngine {
       roofCenters,
       stats: {
         cells: town.size,
+        terrainCells: terrain.size,
+        stairs: all.reduce((n, c) => n + (c.stairs || 0), 0),
         blocks: [...town.values()].reduce((n, l) => n + l.filter((v) => v !== null).length, 0),
         floors: [...town.values()].reduce(
           (n, l) => n + l.slice(1).filter((v) => v !== null).length,

@@ -48,6 +48,7 @@ export class ArchitectureView {
       id,
       animation,
       town: [...town].map(([id, l]) => [id, l.slice()]),
+      terrain: [...(town.terrain || [])].map(([id, value]) => [id, value.slice()]),
       profile: profiler.enabled,
       epoch: profiler.epoch,
       started: performance.now(),
@@ -137,7 +138,7 @@ export class ArchitectureView {
     this.roofHeights = new Map(result.roofHeights);
     this.roofCenters = new Map(result.roofCenters);
     this.pickMeshes = [...this.chunks.values()].flatMap((c) =>
-      ['wall', 'roof', 'stone'].map((k) => c[k]?.mesh).filter((m) => m?.visible),
+      ['wall', 'roof', 'stone', 'land'].map((k) => c[k]?.mesh).filter((m) => m?.visible),
     );
     this.stats = { ...result.stats, draws: this.group.children.filter((m) => m.visible).length };
   }
@@ -267,7 +268,7 @@ export class ArchitectureView {
   raycast(ray) {
     let closest = null;
     for (const chunk of this.chunks.values())
-      for (const kind of ['wall', 'roof', 'stone']) {
+      for (const kind of ['wall', 'roof', 'stone', 'land']) {
         const entry = chunk[kind];
         if (!entry?.mesh.visible || !entry.data) continue;
         const hit = intersectBVH(ray, entry.data, closest?.distance ?? Infinity);

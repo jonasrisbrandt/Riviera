@@ -1,3 +1,5 @@
+import { MATERIALS, elevation, groundY, sculpt } from './terrain.js';
+import { landscapeDemo } from './landscape-demo.js';
 import './style.css';
 import '@fontsource/dm-sans/latin-400.css';
 import '@fontsource/dm-sans/latin-500.css';
@@ -16,6 +18,7 @@ import { mountProfiler } from './profiler-ui.js';
 import { SpatialIndex } from './spatial.js';
 const $ = (id) => document.getElementById(id);
 const icons = {
+  landscape: '<path d="m2 20 7-14 4 7 3-10 6 17Z M6 12l3 2 2-2 M14 9l2 2 2-2"/>',
   build: '<path d="m3 10 9-7 9 7M5 9v12h14V9M10 21v-7h4v7"/>',
   erase:
     '<path d="m4 13 9-9a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3l-9 9H8l-4-4a2 2 0 0 1 0-3Z M10 8l8 8M10 20h11"/>',
@@ -87,7 +90,7 @@ async function init() {
   controls.update();
   scene.name = 'world';
   const { cells } = profiler.measure('startup.grid', () => makeGrid());
-  let town = profiler.measure('startup.demoTown', () => demoTown(cells));
+  let town = profiler.measure('startup.demoTown', () => landscapeDemo(cells));
   try {
     const saved = profiler.measure('storage.read', () => localStorage.getItem(SAVE_KEY));
     if (saved)
@@ -108,6 +111,9 @@ async function init() {
   profiler.wrap(env, 'updateShore', 'build.shoreMask');
   let selected = 0,
     mode = 'build',
+    domain = 'buildings',
+    terrainTool = 'raise',
+    terrainMaterial = 0,
     hover = null,
     dirty = true,
     soundOn = false,
@@ -118,17 +124,6 @@ async function init() {
   }
   function rebuildWork(animation = null) {
     const work = architecture.rebuild(town, animation);
-    const signature = [...town]
-      .filter(([, l]) => l[0] != null)
-      .map(([id]) => id)
-      .sort((a, b) => a - b)
-      .join(',');
-    if (signature !== shoreSignature) {
-      env.updateShore(town);
-      shoreSignature = signature;
-    }
-    env.updateBounds(town);
-    env.boats.visible = town.size > 20;
     const uiScope = profiler.begin('build.ui');
     $('town-count').textContent = `${town.size} PLATSER · ${architecture.stats.floors} VÅNINGAR`;
     $('undo').disabled = !history.past.length;
@@ -143,11 +138,29 @@ async function init() {
     dirty = true;
     return work;
   }
+  function updateWorldEnvironment() {
+    const occupied = new Map(town);
+    for (const id of town.terrain?.keys() || []) occupied.set(id, [0]);
+    const signature = [...occupied]
+      .filter(([, l]) => l[0] != null)
+      .map(([id]) => id)
+      .sort((a, b) => a - b)
+      .join(',');
+    if (signature !== shoreSignature) {
+      env.updateShore(occupied);
+      shoreSignature = signature;
+    }
+    env.updateBounds(occupied);
+    env.boats.visible = occupied.size > 20;
+  }
   const initialBuild = rebuild();
   profiler.end(startupScope);
   await initialBuild;
+  updateWorldEnvironment();
+  if (town.terrain?.size) home();
   const uiStartupScope = profiler.begin('startup.ui');
   architecture.onCommit = () => {
+    updateWorldEnvironment();
     dirty = true;
     env.sun.shadow.needsUpdate = true;
   };
@@ -225,11 +238,12 @@ async function init() {
   scene.add(birdMesh);
   function select(index) {
     selected = index;
-    document.querySelectorAll('.swatch').forEach((b) => {
+    document.querySelectorAll('#colors .swatch, #stone').forEach((b) => {
       const active = Number(b.dataset.color) === index;
       b.classList.toggle('selected', active);
       b.setAttribute('aria-pressed', String(active));
     });
+    setDomain('buildings');
     setMode('build');
   }
   PALETTE.forEach((color, i) => {
@@ -252,12 +266,63 @@ async function init() {
   $('stone').onclick = () => select(-1);
   function setMode(m) {
     mode = m;
-    $('build').classList.toggle('active', m === 'build');
+    $('build').classList.toggle('active', domain === 'buildings' && m === 'build');
     $('erase').classList.toggle('active', m === 'erase');
-    $('build').setAttribute('aria-pressed', String(m === 'build'));
+    $('build').setAttribute('aria-pressed', String(domain === 'buildings' && m === 'build'));
+    if (domain === 'terrain') selectTerrainTool(m === 'erase' ? 'lower' : 'raise');
     $('erase').setAttribute('aria-pressed', String(m === 'erase'));
     dirty = true;
   }
+  function selectTerrainTool(tool) {
+    terrainTool = tool;
+    for (const name of ['raise', 'lower', 'paint', 'smooth']) {
+      $(name).classList.toggle('active', name === tool);
+      $(name).setAttribute('aria-pressed', String(name === tool));
+    }
+    dirty = true;
+  }
+  function setDomain(value) {
+    domain = value;
+    mode = 'build';
+    $('building-palette').classList.toggle('hidden', value !== 'buildings');
+    $('terrain-palette').classList.toggle('hidden', value !== 'terrain');
+    $('landscape').classList.toggle('active', value === 'terrain');
+    $('landscape').setAttribute('aria-pressed', String(value === 'terrain'));
+    $('build').classList.toggle('active', value === 'buildings');
+    $('build').setAttribute('aria-pressed', String(value === 'buildings'));
+    $('erase').classList.remove('active');
+    $('erase').setAttribute('aria-pressed', 'false');
+    document.querySelector('.hint').innerHTML =
+      value === 'terrain'
+        ? '<span>Klicka eller dra för att forma<span>Högerklick sänker · Alt + dra roterar</span></span>'
+        : '<span>Klicka för att bygga<span>Dra för att upptäcka</span></span>';
+    dirty = true;
+  }
+  MATERIALS.forEach((material, i) => {
+    const b = document.createElement('button');
+    b.className = 'swatch' + (i === 0 ? ' selected auto-material' : '');
+    b.style.setProperty('--swatch', material.color);
+    b.title = material.name;
+    b.setAttribute('aria-label', material.name);
+    b.setAttribute('aria-pressed', String(i === 0));
+    b.onclick = () => {
+      terrainMaterial = i;
+      $('material-name').textContent = material.name;
+      [...$('materials').children].forEach((el, n) => {
+        el.classList.toggle('selected', n === i);
+        el.setAttribute('aria-pressed', String(n === i));
+      });
+      dirty = true;
+    };
+    $('materials').appendChild(b);
+  });
+  for (const tool of ['raise', 'lower', 'paint', 'smooth'])
+    $(tool).onclick = () => {
+      mode = 'build';
+      $('erase').setAttribute('aria-pressed', 'false');
+      $('erase').classList.remove('active');
+      selectTerrainTool(tool);
+    };
   select(0);
   const ray = new T.Raycaster(),
     pointer = new T.Vector2(10, 10),
@@ -275,7 +340,12 @@ async function init() {
   function pick(...args) {
     return profiler.measure('input.pick', () => pickWork(...args));
   }
-  function pickWork(remove = false, requestedRay = null, paint = selected) {
+  function pickWork(
+    remove = false,
+    requestedRay = null,
+    paint = selected,
+    landscape = domain === 'terrain',
+  ) {
     if (!requestedRay && (Math.abs(pointer.x) > 1 || Math.abs(pointer.y) > 1)) return null;
     if (!requestedRay) ray.setFromCamera(pointer, camera);
     const pickingRay = requestedRay || ray.ray;
@@ -284,6 +354,11 @@ async function init() {
       const meta = hit.meta;
       if (!meta) return null;
       let { id, level, edge } = meta;
+      if (landscape) return { id, level: elevation(town, id) };
+      if (level === -1) {
+        if (remove || town.has(id)) return null;
+        return { id, level: paint === -1 ? 0 : 1 };
+      }
       if (remove) return { id, level };
       if (paint === -1) {
         if (edge >= 0) id = cells[id].neighbors[edge];
@@ -292,12 +367,14 @@ async function init() {
       }
       if (edge < 0) level++;
       else {
+        const absolute = level + elevation(town, id);
         id = cells[id].neighbors[edge];
+        level = Math.max(0, absolute - elevation(town, id));
       }
-      if (id < 0 || level > 24 || town.get(id)?.[level] != null) return null;
+      if (id < 0 || level + elevation(town, id) > 24 || town.get(id)?.[level] != null) return null;
       return { id, level };
     }
-    if (remove) return null;
+    if (remove && !landscape) return null;
     if (pickingRay.intersectPlane(plane, hitPoint)) {
       const cell = profiler.measure(
         'input.gridSearch',
@@ -306,6 +383,7 @@ async function init() {
             .at(hitPoint.x, hitPoint.z)
             .find(({ cell: c }) => inside([hitPoint.x, hitPoint.z], c.points))?.cell,
       );
+      if (cell && landscape) return { id: cell.id, level: elevation(town, cell.id) };
       if (cell && town.get(cell.id)?.[0] == null) return { id: cell.id, level: 0 };
     }
     return null;
@@ -319,7 +397,7 @@ async function init() {
       highlight.visible = ghost.visible = false;
       return;
     }
-    hover = pick(mode === 'erase');
+    hover = pick(mode === 'erase' || (domain === 'terrain' && terrainTool === 'lower'));
     highlight.visible = ghost.visible = !!hover;
     if (!hover) return;
     const geometryScope = profiler.begin('input.hoverGeometry');
@@ -329,9 +407,26 @@ async function init() {
         mode === 'erase' && hover.level > 0 && top(town.get(hover.id)) === hover.level
           ? (architecture.roofHeights.get(hover.id * 32 + hover.level) ?? 0.6) + 0.07
           : 0.02,
-      y = hover.level === 0 ? BASE + 0.018 : BASE + hover.level * FLOOR + roofMargin,
-      bottom = hover.level === 0 ? 0.01 : BASE + (hover.level - 1) * FLOOR + 0.02;
-    const hoverKey = [hover.id, hover.level, roofMargin, mode, selected].join(':');
+      offset = groundY(town, hover.id),
+      y =
+        domain === 'terrain'
+          ? Math.max(0.035, offset + (terrainTool === 'raise' ? FLOOR : 0.035))
+          : offset + (hover.level === 0 ? BASE + 0.018 : BASE + hover.level * FLOOR + roofMargin),
+      bottom =
+        domain === 'terrain'
+          ? Math.max(0.015, offset - (terrainTool === 'lower' ? FLOOR : 0))
+          : offset + (hover.level === 0 ? 0.01 : BASE + (hover.level - 1) * FLOOR + 0.02);
+    const hoverKey = [
+      hover.id,
+      hover.level,
+      roofMargin,
+      mode,
+      selected,
+      domain,
+      terrainTool,
+      terrainMaterial,
+      offset,
+    ].join(':');
     if (hoverKey === lastHoverKey) {
       profiler.end(geometryScope);
       return;
@@ -370,7 +465,14 @@ async function init() {
       ghost.geometry.attributes.position.needsUpdate = true;
     highlight.geometry.computeBoundingSphere();
     ghost.geometry.computeBoundingSphere();
-    const col = mode === 'erase' ? '#f58973' : selected === -1 ? '#eae2c6' : PALETTE[selected];
+    const col =
+      mode === 'erase' || (domain === 'terrain' && terrainTool === 'lower')
+        ? '#f58973'
+        : domain === 'terrain'
+          ? MATERIALS[terrainMaterial].color
+          : selected === -1
+            ? '#eae2c6'
+            : PALETTE[selected];
     lineMat.color.set(mode === 'erase' ? '#fa8975' : '#fff1ca');
     ghostMat.color.set(col);
     profiler.end(geometryScope);
@@ -395,7 +497,12 @@ async function init() {
     return profiler.measure('input.edit', () => editWork(...args));
   }
   let editGeneration = 0;
-  function editWork(remove = false, requestedRay = null, paint = selected) {
+  function editWork(
+    remove = false,
+    requestedRay = null,
+    paint = selected,
+    context = { domain, tool: terrainTool, material: terrainMaterial },
+  ) {
     if (!requestedRay) {
       ray.setFromCamera(pointer, camera);
       requestedRay = ray.ray.clone();
@@ -405,13 +512,29 @@ async function init() {
       architecture
         .ready()
         .then(() => {
-          if (generation === editGeneration) edit(remove, requestedRay, paint);
+          if (generation === editGeneration) edit(remove, requestedRay, paint, context);
         })
         .catch(() => {});
       return;
     }
-    const target = pick(remove, requestedRay, paint);
+    const target = pick(remove, requestedRay, paint, context.domain === 'terrain');
     if (!target) return;
+    if (context.domain === 'terrain') {
+      if (context.stroke?.seen.has(target.id)) return;
+      const next = new Map(town);
+      next.terrain = new Map(town.terrain || []);
+      if (!sculpt(next, target.id, remove ? 'lower' : context.tool, context.material, cells))
+        return;
+      if (!context.stroke?.saved) history.push(town);
+      if (context.stroke) {
+        context.stroke.saved = true;
+        context.stroke.seen.add(target.id);
+      }
+      town = next;
+      rebuild().catch(() => {});
+      updateHover();
+      return;
+    }
     history.push(town);
     const levels = town.get(target.id)?.slice() || [];
     if (remove) {
@@ -422,13 +545,15 @@ async function init() {
     } else {
       while (levels.length <= target.level) levels.push(null);
       levels[target.level] = target.level === 0 ? 0 : Math.max(0, paint);
+      if (elevation(town, target.id) && levels[0] == null) levels[0] = 0;
       town.set(target.id, levels);
     }
     rebuild(remove ? null : { id: target.id, level: target.level }).catch(() => {});
     plop(remove);
     updateHover();
   }
-  let dragging = false;
+  let dragging = false,
+    terrainStroke = null;
   let start = null,
     activePointers = new Set(),
     multiTouch = false;
@@ -443,7 +568,10 @@ async function init() {
     );
     dirty = true;
   };
-  canvas.addEventListener('pointermove', pointerFrom);
+  canvas.addEventListener('pointermove', (e) => {
+    pointerFrom(e);
+    if (terrainStroke && e.buttons === 1) edit(false, null, selected, terrainStroke);
+  });
   canvas.addEventListener(
     'pointerdown',
     (e) => {
@@ -451,6 +579,23 @@ async function init() {
       activePointers.add(e.pointerId);
       if (activePointers.size > 1) multiTouch = true;
       start = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button };
+      if (
+        domain === 'terrain' &&
+        e.pointerType === 'mouse' &&
+        e.button === 0 &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        terrainStroke = {
+          domain,
+          tool: terrainTool,
+          material: terrainMaterial,
+          stroke: { seen: new Set(), saved: false },
+        };
+        controls.enabled = false;
+        canvas.setPointerCapture(e.pointerId);
+        edit(false, null, selected, terrainStroke);
+      }
       if (e.shiftKey) controls.mouseButtons.LEFT = T.MOUSE.PAN;
       else controls.mouseButtons.LEFT = T.MOUSE.ROTATE;
     },
@@ -461,12 +606,18 @@ async function init() {
     if (
       start &&
       !multiTouch &&
+      !dragging &&
+      !terrainStroke &&
+      !e.altKey &&
       !e.shiftKey &&
       Math.hypot(e.clientX - start.x, e.clientY - start.y) < 6 &&
       performance.now() - start.t < 700 &&
       e.button !== 1
     )
       edit(e.button === 2 || mode === 'erase');
+    terrainStroke = null;
+    controls.enabled = true;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     activePointers.delete(e.pointerId);
     if (!activePointers.size) {
       multiTouch = false;
@@ -475,6 +626,8 @@ async function init() {
     }
   });
   canvas.addEventListener('pointercancel', (e) => {
+    terrainStroke = null;
+    controls.enabled = true;
     activePointers.delete(e.pointerId);
     start = null;
     multiTouch = false;
@@ -486,7 +639,14 @@ async function init() {
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   controls.addEventListener('change', () => (dirty = true));
-  $('build').onclick = () => setMode('build');
+  $('build').onclick = () => {
+    setDomain('buildings');
+    setMode('build');
+  };
+  $('landscape').onclick = () => {
+    setDomain('terrain');
+    selectTerrainTool('raise');
+  };
   $('erase').onclick = () => setMode('erase');
   $('undo').onclick = () => {
     editGeneration++;
@@ -502,22 +662,74 @@ async function init() {
     return profiler.measure('input.home', () => homeWork(...args));
   }
   function homeWork() {
-    const list = [...town.keys()].map((id) => cells[id].center);
+    const list = [...new Set([...town.keys(), ...(town.terrain?.keys() || [])])].map(
+      (id) => cells[id].center,
+    );
     let x = 0,
       z = 0;
     if (list.length) {
       x = list.reduce((s, p) => s + p[0], 0) / list.length;
       z = list.reduce((s, p) => s + p[1], 0) / list.length;
     }
-    controls.target.set(x, 1.8, z);
-    camera.position.set(x + 72, 74.6, z + 100);
+    const height = Math.max(
+      0,
+      ...[...new Set([...town.keys(), ...(town.terrain?.keys() || [])])].map(
+        (id) => groundY(town, id) + (town.get(id)?.length || 0) * FLOOR,
+      ),
+    );
+    const targetY = town.terrain?.size ? Math.max(1.8, height * 0.5) : 1.8;
+    controls.target.set(x, targetY, z);
+    camera.position.set(x + 72, targetY + 72.8, z + 100);
     const radius = list.reduce((r, p) => Math.max(r, Math.hypot(p[0] - x, p[1] - z)), 0);
-    camera.zoom = Math.min(1, 10 / Math.max(1, radius));
+    camera.zoom = town.terrain?.size
+      ? Math.min(1.3, 13 / Math.max(1, radius))
+      : Math.min(1, 10 / Math.max(1, radius));
     camera.updateProjectionMatrix();
     controls.enableDamping = false;
     controls.update();
     controls.enableDamping = true;
     camera.updateMatrixWorld();
+    if (town.terrain?.size) {
+      // Frame the actual projected island, including tall roofs, in portrait and landscape.
+      camera.zoom = 1;
+      camera.updateProjectionMatrix();
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (const id of new Set([...town.keys(), ...town.terrain.keys()])) {
+        const high =
+          groundY(town, id) +
+          BASE +
+          Math.max(0, top(town.get(id))) * FLOOR +
+          (town.has(id) ? 0.9 : 2.1);
+        for (const [x, z] of cells[id].points)
+          for (const y of [0, high]) {
+            const p = new T.Vector3(x, y, z).project(camera);
+            minX = Math.min(minX, p.x);
+            maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y);
+            maxY = Math.max(maxY, p.y);
+          }
+      }
+      const right = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 0),
+        up = new T.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+      const offset = right
+        .multiplyScalar((minX + maxX) * 0.25 * (camera.right - camera.left))
+        .add(up.multiplyScalar((minY + maxY) * 0.25 * (camera.top - camera.bottom)));
+      camera.position.add(offset);
+      controls.target.add(offset);
+      camera.zoom = Math.min(
+        1.3,
+        1.7 / (maxX - minX),
+        (innerWidth < 701 ? 1.25 : 1.6) / (maxY - minY),
+      );
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+      controls.enableDamping = false;
+      controls.update();
+      controls.enableDamping = true;
+    }
   }
   $('home').onclick = home;
   for (const name of ['help', 'settings'])
@@ -579,6 +791,17 @@ async function init() {
     }
     e.target.value = '';
   };
+  $('landscape-demo').onclick = async () => {
+    editGeneration++;
+    history.push(town);
+    town = landscapeDemo(cells);
+    await rebuild();
+    home();
+    setDomain('terrain');
+    selectTerrainTool('raise');
+    $('settings-panel').classList.add('hidden');
+    toast('En kust att forma. Ångra tar dig tillbaka till din by.');
+  };
   $('new').onclick = () => {
     editGeneration++;
     history.push(town);
@@ -586,7 +809,12 @@ async function init() {
     rebuild().catch(() => {});
     home();
     $('settings-panel').classList.add('hidden');
-    toast('Ett tomt hav. Klicka för att lägga den första stenen.');
+    if (domain === 'terrain') selectTerrainTool('raise');
+    toast(
+      domain === 'terrain'
+        ? 'Ett tomt hav. Klicka eller dra för att forma en ö.'
+        : 'Ett tomt hav. Klicka för att lägga den första stenen.',
+    );
   };
   let photoRequested = false;
   $('photo').onclick = () => {
@@ -632,7 +860,8 @@ async function init() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       $(e.shiftKey ? 'redo' : 'undo').click();
-    } else if (e.key.toLowerCase() === 'b') setMode('build');
+    } else if (e.key.toLowerCase() === 'b') $('build').click();
+    else if (e.key.toLowerCase() === 'l') $('landscape').click();
     else if (e.key.toLowerCase() === 'e') setMode('erase');
     else if (e.key.toLowerCase() === 'h') home();
     else if (e.key === 'Escape')
@@ -722,6 +951,9 @@ async function init() {
     get stats() {
       return {
         ...architecture.stats,
+        domain,
+        terrainTool,
+        terrainMaterial,
         pending: architecture.pending,
         revision: architecture.revision,
         appliedRevision: architecture.appliedRevision,
@@ -740,9 +972,15 @@ async function init() {
       const roof = architecture.roofCenters.get(id * 32 + level);
       const p = new T.Vector3(
         c.center[0],
-        level === 0 ? BASE : BASE + level * FLOOR + (roof !== undefined ? roof - 0.08 : 0.25),
+        groundY(town, id) +
+          (level === 0 ? BASE : BASE + level * FLOOR + (roof !== undefined ? roof - 0.08 : 0.25)),
         c.center[1],
       ).project(camera);
+      return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };
+    },
+    projectTerrain(id) {
+      const c = cells[id],
+        p = new T.Vector3(c.center[0], groundY(town, id) + 0.01, c.center[1]).project(camera);
       return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };
     },
     projectFace(id, level, edge) {
@@ -751,7 +989,7 @@ async function init() {
         b = c.points[(edge + 1) % 4];
       const p = new T.Vector3(
         (a[0] + b[0]) / 2,
-        BASE + (level - 0.5) * FLOOR,
+        groundY(town, id) + BASE + (level - 0.5) * FLOOR,
         (a[1] + b[1]) / 2,
       ).project(camera);
       return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };

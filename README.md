@@ -1,6 +1,6 @@
 # Riviera
 
-En spelbar, Townscaper-inspirerad byggleksak med Cinque Terre-färger, terrakottatak, fönsterluckor, balkonger och en liten hamn. All geometri skapas i projektet; inga tillgångar från originalspelet används.
+En spelbar, Townscaper-inspirerad byggleksak med Cinque Terre-färger, terrakottatak, fönsterluckor, balkonger och skulpterbara kustlandskap. All geometri skapas i projektet; inga tillgångar från originalspelet används.
 
 **[Spela Riviera](https://jonasrisbrandt.github.io/Riviera/)** · [Källkod](https://github.com/jonasrisbrandt/Riviera)
 
@@ -28,6 +28,21 @@ npm run dev
 - Kameraknappen sparar en PNG utan gränssnitt. Ljudknappen aktiverar syntetiskt havsljud och byggljud.
 
 Byn autosparas lokalt. Exportera JSON för en flyttbar säkerhetskopia.
+
+## Forma landskap
+
+- Välj bergsknappen **Landskap** eller tryck **L**. **B** återgår till byggnader.
+- Klicka eller dra med musen för att höja mark, en nivå per cell och penseldrag. Högerklick eller **Sänk** sänker; mark kan återgå till vatten.
+- **Auto** väljer gröna platåer, klippor, strandsluttningar och murar nära bebyggelse. Gräs, Klippa, Torr jord och Sand kan väljas explicit.
+- **Måla** ändrar materialet utan att ändra höjd. **Jämna** flyttar marken ett steg mot grannarnas medelhöjd.
+- Hus byggs direkt på land och följer med när marken höjs eller sänks. Tak och väggar ansluter utifrån faktisk världshöjd.
+- Lämpliga passager mellan terrasser får automatiska stentrappor. Vegetation och kuststenar genereras deterministiskt.
+- Ett penseldrag är en enda ångra-operation. Alt + dra roterar kameran i landskapsläge; Shift + dra panorerar. På mobil: tryck för att forma, två fingrar för kameran.
+- Nya besökare får en landskapsby. Befintliga sparningar bevaras. **Inställningar → Upptäck en landskapsby** öppnar exemplet; Ångra återställer din föregående by.
+
+Sparformat 2 lägger till markhöjd och material; äldre byar i format 1 fungerar fortsatt. Landskapet har högst 12 nivåer; markhöjd plus husvåningar ryms inom 24 nivåer.
+
+Se [landskapets arkitektur, verifiering och mätning](docs/landscape.md).
 
 ## GitHub Pages
 
@@ -62,6 +77,8 @@ node scripts/advanced.mjs
 node scripts/surface-artifacts.mjs
 npm run test:optimized
 node scripts/build-frames.mjs
+node scripts/landscape.mjs
+node scripts/landscape-performance.mjs
 ```
 
 Webbläsartestet kräver lokal Chrome, en körande Vite-server på port 5173 och tillåtelse att starta en isolerad webbläsarprocess. Det testar WebGPU, klickbyggande, färgval, borttagning, historik, autosparning, import/export och PNG. Bilder och rapporter skrivs till `artifacts/`.

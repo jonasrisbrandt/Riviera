@@ -519,3 +519,86 @@ select {
     width: max-content;
   }
 }
+
+#materials {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px;
+}
+#material-name {
+  font-size: 9px;
+  opacity: 0.7;
+}
+.auto-material {
+  background: linear-gradient(145deg, #a7b574 0 45%, #beb5a0 46% 70%, #e2d0a8 71%);
+}
+.terrain-tools {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.terrain-tools button {
+  border-radius: 9px;
+  font-size: 22px;
+  padding: 4px 8px;
+  min-width: 38px;
+}
+.terrain-tools button span {
+  display: block;
+  font-size: 8px;
+  margin-top: 2px;
+}
+.terrain-tools button.active {
+  background: #345d59;
+  color: #fff8e7;
+}
+@media (min-width: 701px) {
+  .toolbar {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
+@media (max-width: 1100px) {
+  .hint,
+  .location {
+    visibility: hidden;
+  }
+}
+@media (max-width: 700px) {
+  #materials {
+    flex-direction: row;
+    gap: 9px;
+    flex-shrink: 0;
+  }
+  #terrain-palette {
+    gap: 7px;
+    justify-content: center;
+    padding: 9px 8px;
+  }
+  #material-name {
+    display: none;
+  }
+  .terrain-tools {
+    display: flex;
+    gap: 1px;
+  }
+  .terrain-tools button {
+    min-width: 30px;
+    padding: 3px 4px;
+  }
+  #terrain-palette .palette-rule {
+    display: none;
+  }
+  .toolbar {
+    gap: 2px;
+    padding: 6px;
+  }
+  .toolbar button {
+    width: 38px;
+  }
+  .toolbar i {
+    margin: 8px 1px;
+  }
+}

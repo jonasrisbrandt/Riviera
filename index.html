@@ -30,7 +30,7 @@
         ><button id="help" class="round" title="Så bygger du" aria-label="Så bygger du">?</button>
       </div>
     </header>
-    <aside class="palette" aria-label="Husfärger">
+    <aside id="building-palette" class="palette" aria-label="Husfärger">
       <span class="palette-label">FÄRG</span>
       <div id="colors"></div>
       <div class="palette-rule"></div>
@@ -40,6 +40,26 @@
         title="Sten och kaj"
         aria-label="Sten och kaj"
       ></button>
+    </aside>
+    <aside
+      id="terrain-palette"
+      class="palette hidden"
+      aria-label="Markmaterial och landskapsverktyg"
+    >
+      <span class="palette-label">MARK</span>
+      <div id="materials"></div>
+      <span id="material-name">Auto</span>
+      <div class="palette-rule"></div>
+      <div class="terrain-tools">
+        <button id="raise" class="active" title="Höj mark" aria-label="Höj mark">
+          ↑<span>Höj</span>
+        </button>
+        <button id="lower" title="Sänk mark" aria-label="Sänk mark">↓<span>Sänk</span></button>
+        <button id="paint" title="Måla mark" aria-label="Måla mark">◒<span>Måla</span></button>
+        <button id="smooth" title="Jämna mark mot grannarna" aria-label="Jämna mark">
+          ≈<span>Jämna</span>
+        </button>
+      </div>
     </aside>
     <div id="color-name" class="color-name">Terrakotta</div>
     <section id="settings-panel" class="panel hidden">
@@ -67,6 +87,7 @@
       <div class="panel-actions">
         <button id="export">Spara by</button><button id="import">Öppna by</button>
       </div>
+      <button id="landscape-demo" class="text-button">Upptäck en landskapsby</button>
       <input id="file" type="file" accept=".json" hidden /><button id="new" class="text-button">
         Börja med ett tomt hav
       </button>
@@ -83,9 +104,11 @@
         <dd>Bygg en våning till</dd>
         <dt>Klicka på en vägg</dt>
         <dd>Låt byn växa åt sidan</dd>
+        <dt>Landskap (L)</dt>
+        <dd>Höj marken ett steg med ett klick</dd>
         <dt>Högerklick / suddgummi</dt>
-        <dd>Ta bort ett block</dd>
-        <dt>Dra / två fingrar</dt>
+        <dd>Ta bort ett block eller sänk mark</dd>
+        <dt>Alt + dra / två fingrar</dt>
         <dd>Vrid kameran</dd>
         <dt>Skrolla / nyp</dt>
         <dd>Kom närmare</dd>
@@ -95,8 +118,9 @@
         <dd>Ångra / gör om</dd>
       </dl>
       <p class="small">
-        Husens tak, fönster, balkonger och valv växer fram automatiskt. Din by sparas på den här
-        enheten.
+        I landskapsläge kan du också dra med musen för att forma flera celler i ett svep. Varje svep
+        kan ångras. Hus följer med när marken höjs eller sänks. Klippor, terrasser och trappor växer
+        fram automatiskt. Din by sparas på den här enheten.
       </p>
     </section>
     <div id="toast" role="status"></div>
@@ -107,6 +131,7 @@
       </div>
       <nav class="toolbar" aria-label="Byggverktyg">
         <button id="build" class="active" title="Bygg (B)" aria-label="Bygg"></button
+        ><button id="landscape" title="Landskap (L)" aria-label="Landskap"></button
         ><button id="erase" title="Ta bort (E)" aria-label="Ta bort"></button><i></i
         ><button id="undo" title="Ångra (Ctrl+Z)" aria-label="Ångra"></button
         ><button id="redo" title="Gör om (Ctrl+Shift+Z)" aria-label="Gör om"></button><i></i
