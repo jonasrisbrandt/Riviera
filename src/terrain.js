@@ -52,7 +52,7 @@ export function sculpt(town, id, tool, material = 0, cells = null) {
 }
 
 // A ramp's upper edge retains its stored height. Its lower edge meets the neighbour.
-export function cornerHeights(cell, terrain, town) {
+function rawCornerHeights(cell, terrain, town) {
   const record = terrain.get(cell.id),
     h = record?.[0] || 0;
   const heights = [h, h, h, h];
@@ -62,6 +62,67 @@ export function cornerHeights(cell, terrain, town) {
     if (low > 0 && low < h && h - low <= 1) heights[e] = heights[(e + 1) % 4] = low;
   }
   return heights.map((v) => v * FLOOR);
+}
+// Topology is immutable; resolve heights from current state, never a stale geometry cache.
+const vertexTopology = new WeakMap();
+export function cornerHeights(cell, terrain, town, cells = null) {
+  if (!cells) return rawCornerHeights(cell, terrain, town);
+  let vertices = vertexTopology.get(cells);
+  if (!vertices) {
+    vertices = new Map();
+    for (const c of cells)
+      for (const v of c.vertices) {
+        if (!vertices.has(v)) vertices.set(v, []);
+        vertices.get(v).push(c);
+      }
+    vertexTopology.set(cells, vertices);
+  }
+  return cell.vertices.map((vertex, corner) => {
+    const incident = (vertices.get(vertex) || []).filter((c) => terrain.has(c.id));
+    const items = incident.map((c) => {
+      const h = terrain.get(c.id)[0] * FLOOR;
+      const raw = rawCornerHeights(c, terrain, town);
+      const low = Math.min(...raw);
+      return { c, h, low, value: raw[c.vertices.indexOf(vertex)], slope: low < h - 1e-7 };
+    });
+    const groups = items.map((item) => {
+      const shoulders = !town?.has(item.c.id) ? items.filter((n) => n.slope && n.h === item.h) : [];
+      return {
+        members: [item],
+        lo: item.slope
+          ? item.low
+          : shoulders.length
+            ? Math.min(...shoulders.map((n) => n.low))
+            : item.h,
+        hi: item.h,
+      };
+    });
+    // Join overlapping height ranges around the vertex fan. Foundations stay fixed.
+    // Separate terrace heights remain cliffs unless a slope bridges them.
+    for (let a = 0; a < groups.length; a++)
+      for (let b = a + 1; b < groups.length; b++) {
+        const ga = groups[a],
+          gb = groups[b];
+        if (!ga.members.length || !gb.members.length) continue;
+        const connected = ga.members.some((i) =>
+          gb.members.some(
+            (j) => i.c.neighbors.includes(j.c.id) && (i.h === j.h || i.slope || j.slope),
+          ),
+        );
+        const lo = Math.max(ga.lo, gb.lo),
+          hi = Math.min(ga.hi, gb.hi);
+        if (!connected || lo > hi + 1e-7) continue;
+        ga.members.push(...gb.members);
+        ga.lo = lo;
+        ga.hi = hi;
+        gb.members = [];
+        a = -1;
+        break;
+      }
+    const group = groups.find((g) => g.members.some((i) => i.c.id === cell.id));
+    if (!group) return rawCornerHeights(cell, terrain, town)[corner];
+    return Math.max(group.lo, Math.min(group.hi, ...group.members.map((i) => i.value)));
+  });
 }
 // Choose the empty/lower cell in front of a cliff when filling a gap.
 // Erasing, painting and shaping slopes always address the surface actually hit.

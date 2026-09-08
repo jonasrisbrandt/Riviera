@@ -1,5 +1,6 @@
 import { manualLaundryPair, laundryKey } from './laundry-layout.js';
 import { terrainPoint } from './terrain-builder.js';
+import { SURFACE_STEPS, edgeSurface } from './terrain-surface.js';
 import { createLaundry } from './laundry.js';
 import {
   MATERIALS,
@@ -194,7 +195,10 @@ async function init() {
     depthTest: true,
   });
   let highlight = new T.LineSegments(
-    new T.BufferGeometry().setAttribute('position', new T.BufferAttribute(new Float32Array(48), 3)),
+    new T.BufferGeometry().setAttribute(
+      'position',
+      new T.BufferAttribute(new Float32Array(48 * SURFACE_STEPS), 3),
+    ),
     lineMat,
   );
   env.addOverlay(highlight, 2);
@@ -206,7 +210,10 @@ async function init() {
     side: T.DoubleSide,
   });
   const ghost = new T.Mesh(
-    new T.BufferGeometry().setAttribute('position', new T.BufferAttribute(new Float32Array(72), 3)),
+    new T.BufferGeometry().setAttribute(
+      'position',
+      new T.BufferAttribute(new Float32Array(72 * SURFACE_STEPS), 3),
+    ),
     ghostMat,
   );
   env.addOverlay(ghost, 1);
@@ -574,8 +581,8 @@ async function init() {
       const preview = new Map(town);
       preview.terrain = new Map(town.terrain || []);
       sculpt(preview, c.id, terrainTool, terrainMaterial, cells);
-      const current = cornerHeights(c, town.terrain || new Map(), town),
-        next = cornerHeights(c, preview.terrain, preview);
+      const current = cornerHeights(c, town.terrain || new Map(), town, cells),
+        next = cornerHeights(c, preview.terrain, preview, cells);
       highPoints = c.points.map((p, i) =>
         terrainPoint(p, Math.max(0.035, Math.max(current[i], next[i]) + 0.025)),
       );
@@ -583,15 +590,21 @@ async function init() {
         terrainPoint(p, Math.max(0.015, Math.min(current[i], next[i]) + 0.015)),
       );
     }
+    const segments = domain === 'terrain' ? SURFACE_STEPS : 1;
     for (let e = 0; e < 4; e++) {
-      const n = (e + 1) % 4,
-        a = highPoints[e],
-        b = highPoints[n],
-        c = lowPoints[e],
-        d = lowPoints[n];
-      lines.push(...a, ...b, ...c, ...a);
-      tri.push(...c, ...a, ...b, ...c, ...b, ...d);
+      const n = (e + 1) % 4;
+      for (let k = 0; k < segments; k++) {
+        const a = edgeSurface(highPoints[e], highPoints[n], k / segments),
+          b = edgeSurface(highPoints[e], highPoints[n], (k + 1) / segments),
+          c = edgeSurface(lowPoints[e], lowPoints[n], k / segments),
+          d = edgeSurface(lowPoints[e], lowPoints[n], (k + 1) / segments);
+        lines.push(...a, ...b);
+        if (k === 0) lines.push(...c, ...a);
+        tri.push(...c, ...a, ...b, ...c, ...b, ...d);
+      }
     }
+    highlight.geometry.setDrawRange(0, lines.length / 3);
+    ghost.geometry.setDrawRange(0, tri.length / 3);
     highlight.geometry.attributes.position.array.set(lines);
     ghost.geometry.attributes.position.array.set(tri);
     highlight.geometry.attributes.position.needsUpdate =
@@ -1142,7 +1155,8 @@ async function init() {
       const c = cells[id],
         p = new T.Vector3(
           c.center[0],
-          cornerHeights(c, town.terrain || new Map(), town).reduce((a, b) => a + b, 0) / 4 + 0.01,
+          cornerHeights(c, town.terrain || new Map(), town, cells).reduce((a, b) => a + b, 0) / 4 +
+            0.01,
           c.center[1],
         ).project(camera);
       return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };

@@ -4,6 +4,12 @@ En spelbar, Townscaper-inspirerad byggleksak med Cinque Terre-färger, terrakott
 
 **[Spela Riviera](https://jonasrisbrandt.github.io/Riviera/)** · [Källkod](https://github.com/jonasrisbrandt/Riviera)
 
+## Lär dig hur Riviera fungerar
+
+[**Riviera inifrån – teknisk beskrivning och tutorial**](docs/teknisk-tutorial.md) följer ett klick genom speldata, worker och geometri till WebGPU-rendering. Guiden innehåller diagram, kodhänvisningar, mätning och praktiska övningar.
+
+Kör det fristående labbet med `node scripts/tutorial-lab.mjs`. Det visar halvsteg, gemensamma tak, inkrementell ombyggnad och ångra, och skapar en byfil som kan importeras i spelet.
+
 ## Starta
 
 Använd Node.js 24 eller senare.
@@ -32,8 +38,9 @@ Byn autosparas lokalt. Exportera JSON för en flyttbar säkerhetskopia.
 ## Forma landskap
 
 - Välj bergsknappen **Landskap** eller tryck **L**. **B** återgår till byggnader.
-- Klicka eller dra med musen för att höja mark, en nivå per cell och penseldrag. Högerklick eller **Sänk** sänker; mark kan återgå till vatten.
+- Klicka eller dra med musen för att höja mark, ett halvsteg per cell och penseldrag. Högerklick eller **Sänk** sänker; mark kan återgå till vatten.
 - **Auto** väljer gröna platåer, klippor, strandsluttningar och murar nära bebyggelse. Gräs, Klippa, Torr jord och Sand kan väljas explicit.
+- **Sluttning** binder ihop obebyggd mark med en lägre granne. Upprepade klick växlar riktning och återgår sedan till plan mark.
 - **Måla** ändrar materialet utan att ändra höjd. **Jämna** flyttar marken ett steg mot grannarnas medelhöjd.
 - Hus byggs direkt på land och följer med när marken höjs eller sänks. Tak och väggar ansluter utifrån faktisk världshöjd.
 - Lämpliga passager mellan terrasser får automatiska stentrappor. Vegetation och kuststenar genereras deterministiskt.
@@ -58,7 +65,7 @@ Lokala sparningar hör till webbadressen. För att flytta en by från localhost 
 - Delaunay-triangulering, matchning av trianglar, uppdelning till fyrhörningar och avslappning ger ett sammanhängande oregelbundet rutnät med varierande vertexvalens.
 - Grannregler tar bort interna väggar, kopplar ihop tak och skapar kajkanter, valv, planteringar och detaljer.
 - Sammanhängande tak på samma höjd delar ett gemensamt avståndsfält, mjuka takfall och rundade nockpannor. Pannornas rader, färgvariation och relief beräknas i GPU-shadern.
-- Inkrementella områden om 12 × 12 världsenheter, med materialbatcher och GPU-instansiering. Startbyn har fem aktiva områden. Oförändrade geometrier, instansbuffertar och sökträd återanvänds. Instansmatriser genereras med WebGPU-compute enbart när ett område ändras.
+- Inkrementella områden om 12 × 12 världsenheter, med materialbatcher och GPU-instansiering. Oförändrade geometrier, instansbuffertar och sökträd återanvänds. Instansmatriser genereras med WebGPU-compute enbart när ett område ändras.
 - Vattenrörelser, skum, puts-/tegelmönster, fåglar och bygganimationer körs i GPU-shaders.
 - Ground Truth Ambient Occlusion (GTAO) i halv upplösning, kantmedveten brusreducering, PCF-solskuggor och filmisk tonmappning. Skuggkartan uppdateras vid byggande, bygganimation och ändrat solljus.
 - En worker hanterar byggregler, takgeometri, typade attributbuffertar och BVH. Ändrade celler, hörngrannar och påverkade takkomponenter byggs om. Main thread sköter inmatning, BVH-träfftestning och applicering av överförda områden; den väntar inte på geometrigenereringen. Föråldrade workersvar förkastas och senare svar innehåller alla ej kvitterade områden.

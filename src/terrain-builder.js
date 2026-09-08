@@ -3,6 +3,13 @@ import { Batch, mergeGeometry } from './geometry-data.js';
 import { FLOOR } from './palette.js';
 import { random, inside } from './grid.js';
 import { cornerHeights, isBeach } from './terrain.js';
+import {
+  SURFACE_STEPS,
+  edgeSurface,
+  surfacePoint,
+  surfaceSample,
+  surfaceNormal,
+} from './terrain-surface.js';
 const rockPrototype = new IcosahedronGeometry(1, 0).attributes.position.array;
 const tint = (hex, n) => new Color(hex).multiplyScalar(n);
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -42,7 +49,7 @@ export function buildTerrain(cell, cells, town, terrain) {
   const y = h * FLOOR,
     p = cell.points,
     center = cell.center;
-  const heights = cornerHeights(cell, terrain, town),
+  const heights = cornerHeights(cell, terrain, town, cells),
     ramp = heights.some((v) => v !== y);
   const top = p.map((v, i) => terrainPoint(v, heights[i]));
   const level = (n) => terrain.get(n)?.[0] || 0;
@@ -71,6 +78,12 @@ export function buildTerrain(cell, cells, town, terrain) {
       const n = cell.neighbors[e],
         drop = h - level(n);
       if (n < 0 || level(n) <= 0 || drop < 0.5 || drop > 1 || terrain.get(n)?.length === 3)
+        continue;
+      if (
+        cornerHeights(cells[n], terrain, town, cells).some(
+          (v) => Math.abs(v - level(n) * FLOOR) > 1e-7,
+        )
+      )
         continue;
       const a = top[e],
         b = top[(e + 1) % 4],
@@ -124,13 +137,13 @@ export function buildTerrain(cell, cells, town, terrain) {
       b = top[next],
       edgeMeta = { ...meta, edge: e };
     const neighbor = n >= 0 ? cells[n] : null;
-    const neighborHeights = neighbor ? cornerHeights(neighbor, terrain, town) : null;
+    const neighborHeights = neighbor ? cornerHeights(neighbor, terrain, town, cells) : null;
     const neighborY = (i) =>
       neighbor ? neighborHeights[neighbor.vertices.indexOf(cell.vertices[i])] : 0;
     const lowA = nh ? terrainPoint(p[e], neighborY(e)) : shorePoint(cell, e, 0, -0.26, beach);
     const lowB = nh ? terrainPoint(p[next], neighborY(next)) : shorePoint(cell, e, 1, -0.26, beach);
-    const upperAt = (t) => lerp(a, b, t),
-      lowerAt = (t) => (nh ? lerp(lowA, lowB, t) : shorePoint(cell, e, t, -0.26, beach));
+    const upperAt = (t) => edgeSurface(a, b, t),
+      lowerAt = (t) => (nh ? edgeSurface(lowA, lowB, t) : shorePoint(cell, e, t, -0.26, beach));
     contour.push(a);
     if (e === stairEdge) {
       const { at, t0, t1, run, low, width } = stair;
@@ -175,13 +188,22 @@ export function buildTerrain(cell, cells, town, terrain) {
     const masonry = cultivated && !ramp && material !== 2 && !beach;
     const breaks = [0, 1];
     const len = Math.hypot(b[0] - a[0], b[2] - a[2]),
-      segments = Math.max(3, Math.ceil(len / 0.55));
+      segments = SURFACE_STEPS;
     for (let j = 1; j < segments; j++) breaks.push(j / segments);
     if (e === stairEdge) breaks.push(stair.t0, stair.t1);
     // Split where two crossing ramps exchange which side is exposed.
     const da = a[1] - lowA[1],
       db = b[1] - lowB[1];
-    if (da * db < 0) breaks.push(da / (da - db));
+    if (da * db < 0) {
+      let lo = 0,
+        hi = 1;
+      for (let k = 0; k < 24; k++) {
+        const t = (lo + hi) / 2;
+        if ((upperAt(t)[1] - lowerAt(t)[1]) * da > 0) lo = t;
+        else hi = t;
+      }
+      breaks.push((lo + hi) / 2);
+    }
     breaks.sort((a, b) => a - b);
     for (let j = 0; j < breaks.length - 1; j++) {
       const ta = breaks[j],
@@ -264,22 +286,61 @@ export function buildTerrain(cell, cells, town, terrain) {
       }
     }
   }
-  for (const tri of ShapeUtils.triangulateShape(
-    contour.map((v) => new Vector2(v[0], v[2])),
-    [],
-  )) {
-    const verts = tri.map((i) => contour[i]);
-    if (
-      (verts[1][2] - verts[0][2]) * (verts[2][0] - verts[0][0]) -
-        (verts[1][0] - verts[0][0]) * (verts[2][2] - verts[0][2]) <
-      0
-    )
-      verts.reverse();
-    land.tri(...verts, tint(topColor, 0.985 + rng() * 0.025), meta);
-  }
-  if (!town.has(cell.id) && !ramp && stairEdge < 0) {
-    const x = center[0],
-      z = center[1];
+  if (!town.has(cell.id) && stairEdge < 0 && (ramp || green)) {
+    const n = SURFACE_STEPS;
+    const base = new Color(topColor),
+      soil = new Color('#bda77f');
+    for (let j = 0; j < n; j++)
+      for (let i = 0; i < n; i++) {
+        const coords = [
+          [i / n, j / n],
+          [(i + 1) / n, j / n],
+          [(i + 1) / n, (j + 1) / n],
+          [i / n, (j + 1) / n],
+        ];
+        for (const indices of [
+          [0, 2, 1],
+          [0, 3, 2],
+        ]) {
+          const uv = indices.map((k) => coords[k]);
+          const verts = uv.map(([u, v]) => surfacePoint(top, u, v));
+          const normals = uv.map(([u, v]) => surfaceNormal(top, u, v));
+          const x = verts.reduce((a, p) => a + p[0], 0) / 3,
+            z = verts.reduce((a, p) => a + p[2], 0) / 3;
+          // World-space worn-earth bands continue over cell borders, with irregular edges.
+          const field = Math.abs(Math.sin(x * 0.63 + Math.sin(z * 0.48) * 0.85));
+          const patch = Math.max(
+            0,
+            Math.min(1, (0.26 - field + 0.035 * Math.sin(x * 13 + z * 9)) / 0.12),
+          );
+          const col = green
+            ? base
+                .clone()
+                .lerp(soil, patch * 0.88)
+                .multiplyScalar(0.98 + 0.045 * Math.sin(x * 7.3 + z * 4.1))
+            : base;
+          land.tri(...verts, col, meta, uv, normals);
+        }
+      }
+  } else
+    for (const tri of ShapeUtils.triangulateShape(
+      contour.map((v) => new Vector2(v[0], v[2])),
+      [],
+    )) {
+      const verts = tri.map((i) => contour[i]);
+      if (
+        (verts[1][2] - verts[0][2]) * (verts[2][0] - verts[0][0]) -
+          (verts[1][0] - verts[0][0]) * (verts[2][2] - verts[0][2]) <
+        0
+      )
+        verts.reverse();
+      land.tri(...verts, tint(topColor, 0.985 + rng() * 0.025), meta);
+    }
+  if (!town.has(cell.id) && stairEdge < 0) {
+    const root = surfaceSample(top, 0.5, 0.5),
+      x = root[0],
+      y = root[1],
+      z = root[2];
     if (green && cell.id % 4 === 0) {
       const trunkHeight = cell.id % 3 !== 0 && cell.id % 5 === 0 ? 1.45 : 1;
       add('cylinder', [x, y + trunkHeight / 2, z], [0.05, trunkHeight, 0.05], '#78674d');
@@ -307,16 +368,47 @@ export function buildTerrain(cell, cells, town, terrain) {
     }
     if (green && cell.id % 2 === 0)
       for (let k = 0; k < 3; k++) {
-        const v = lerp(center, p[k], 0.64),
+        const v = surfaceSample(top, [0.2, 0.8, 0.8][k], [0.2, 0.2, 0.8][k]),
           s = 0.11 + rng() * 0.1;
-        add('sphere', [v[0], y + s * 0.6, v[1]], [s, s * 0.75, s], '#7b9456');
+        add('sphere', [v[0], v[1] + s * 0.6, v[2]], [s, s * 0.75, s], '#7b9456');
       }
+  }
+  if (!town.has(cell.id) && stairEdge < 0 && green) {
+    const scatter = random(cell.id * 823 + 47);
+    // Small clusters leave the central walking space open. Roots follow the rendered mesh.
+    for (let k = 0; k < (ramp ? 5 : 2); k++) {
+      const u = 0.14 + scatter() * 0.72,
+        v = 0.14 + scatter() * 0.72;
+      const root = surfaceSample(top, u, v),
+        size = 0.055 + scatter() * 0.09;
+      if (k % 3 === 0) {
+        for (let j = 0; j < 3; j++)
+          add(
+            'sphere',
+            [
+              root[0] + Math.sin(j * 2.4) * size,
+              root[1] + size * 0.5,
+              root[2] + Math.cos(j * 2.4) * size,
+            ],
+            [size, size * 0.72, size],
+            tint('#718b4d', 0.95 + scatter() * 0.16),
+          );
+      } else {
+        add(
+          'sphere',
+          [root[0], root[1] + size * 0.3, root[2]],
+          [size, size * 0.65, size * 0.8],
+          tint('#beb69f', 0.9 + scatter() * 0.15),
+        );
+      }
+    }
   }
   const result = {
     land: land.finish(),
     stone: stone.finish(),
     instances,
     stairs: stairEdge >= 0 ? 1 : 0,
+    sloped: ramp,
   };
   for (const kind of ['land', 'stone']) result[kind].attributes.buildKey.fill(-2);
   return result;
@@ -339,5 +431,6 @@ export function attachTerrain(data, ground) {
   for (const kind of Object.keys(data.instances))
     data.instances[kind].push(...ground.instances[kind]);
   data.stairs = ground.stairs;
+  data.sloped = ground.sloped;
   return data;
 }

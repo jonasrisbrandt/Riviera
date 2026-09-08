@@ -6,7 +6,13 @@ export function addHeroes(data, cell, cells, town) {
   const h = groundY(town, cell.id),
     levels = town.get(cell.id),
     record = town.terrain?.get(cell.id);
-  if ((levels?.length || 0) > 1 || (!levels && !record) || record?.length === 3 || data.stairs)
+  if (
+    (levels?.length || 0) > 1 ||
+    (!levels && !record) ||
+    record?.length === 3 ||
+    data.sloped ||
+    data.stairs
+  )
     return;
   const beforeInstances = Object.values(data.instances).reduce((n, list) => n + list.length, 0);
   const land = new Batch(),
