@@ -178,6 +178,22 @@ export function buildCell(cell, cells, town, roofs, vertexCells) {
           len = Math.hypot(b[0] - a[0], b[1] - a[1]),
           yaw = Math.atan2(a[1] - b[1], b[0] - a[0]);
         const faceMeta = { id, level: y, edge: e };
+        const spans = town.exposedSpans?.(cell.neighbors[e], bottom, upper);
+        if (spans && (spans.length !== 1 || spans[0][0] !== bottom || spans[0][1] !== upper)) {
+          // Half-storey neighbours hide only the part they occupy. No overlapping facades or cut windows.
+          for (const [low, high] of spans)
+            batch.quad(
+              [a[0], low, a[1]],
+              [a[0], high, a[1]],
+              [b[0], high, b[1]],
+              [b[0], low, b[1]],
+              col,
+              faceMeta,
+              len,
+              high - low,
+            );
+          continue;
+        }
         batch.quad(
           [a[0], bottom, a[1]],
           [a[0], upper, a[1]],

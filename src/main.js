@@ -1,4 +1,16 @@
-import { MATERIALS, elevation, groundY, sculpt } from './terrain.js';
+import { manualLaundryPair, laundryKey } from './laundry-layout.js';
+import { terrainPoint } from './terrain-builder.js';
+import { createLaundry } from './laundry.js';
+import {
+  MATERIALS,
+  TERRAIN_STEP,
+  elevation,
+  groundY,
+  sculpt,
+  terrainPick,
+  cornerHeights,
+  isBeach,
+} from './terrain.js';
 import { landscapeDemo } from './landscape-demo.js';
 import './style.css';
 import '@fontsource/dm-sans/latin-400.css';
@@ -105,6 +117,7 @@ async function init() {
   const env = profiler.measure('startup.environment', () =>
     environment(scene, renderer, camera, cells),
   );
+  const laundry = createLaundry(scene, architecture.clock);
   const history = new History();
   for (const key of ['push', 'undo', 'redo']) profiler.wrap(history, key, 'history.' + key);
   profiler.wrap(architecture, 'rebuild', 'build.architecture');
@@ -117,7 +130,11 @@ async function init() {
     hover = null,
     dirty = true,
     soundOn = false,
-    soundContext = null;
+    soundContext = null,
+    laundryStart = null,
+    laundryMarkerPoint = null,
+    laundryPreviewKey = '',
+    laundryPreviewResult = null;
   let shoreSignature = null;
   function rebuild(...args) {
     return profiler.measure('build.total', () => rebuildWork(...args));
@@ -139,15 +156,17 @@ async function init() {
     return work;
   }
   function updateWorldEnvironment() {
+    laundry.update(cells, town);
     const occupied = new Map(town);
+    occupied.terrain = town.terrain;
     for (const id of town.terrain?.keys() || []) occupied.set(id, [0]);
     const signature = [...occupied]
       .filter(([, l]) => l[0] != null)
-      .map(([id]) => id)
-      .sort((a, b) => a - b)
+      .map(([id]) => id + ':' + (town.terrain?.get(id) ? (isBeach(cells[id], town) ? 1 : 0) : -1))
+      .sort()
       .join(',');
     if (signature !== shoreSignature) {
-      env.updateShore(occupied);
+      env.updateShore(town);
       shoreSignature = signature;
     }
     env.updateBounds(occupied);
@@ -191,6 +210,108 @@ async function init() {
     ghostMat,
   );
   env.addOverlay(ghost, 1);
+  const laundryPreview = new T.Line(
+    new T.BufferGeometry().setAttribute(
+      'position',
+      new T.Float32BufferAttribute(new Float32Array(99), 3),
+    ),
+    new T.LineBasicNodeMaterial({ color: '#fff2c9', transparent: true, opacity: 0.95 }),
+  );
+  const laundryMarker = new T.Mesh(
+    new T.SphereGeometry(0.085, 12, 8),
+    new T.MeshBasicNodeMaterial({ color: '#fff2c9' }),
+  );
+  laundryPreview.visible = laundryMarker.visible = false;
+  env.addOverlay(laundryPreview, 3);
+  env.addOverlay(laundryMarker, 3);
+  function laundryInstruction(text) {
+    $('laundry-instruction').textContent = text;
+  }
+  function resetLaundry() {
+    laundryStart = null;
+    laundryMarkerPoint = null;
+    laundryPreviewKey = '';
+    laundryPreview.visible = laundryMarker.visible = false;
+    laundryInstruction('Tvättlina · välj första huset');
+  }
+  function previewLaundry() {
+    highlight.visible = ghost.visible = false;
+    laundryPreview.visible = false;
+    laundryMarker.visible = !!laundryStart;
+    if (!laundryStart) return;
+    const [id, level] = laundryStart,
+      c = cells[id];
+    if (laundryMarkerPoint) laundryMarker.position.copy(laundryMarkerPoint);
+    if (Math.abs(pointer.x) > 1 || Math.abs(pointer.y) > 1) return;
+    ray.setFromCamera(pointer, camera);
+    const meta = architecture.raycast(ray.ray)?.meta;
+    if (!meta || meta.level < 1 || meta.id === id) return;
+    const key = [...laundryStart, meta.id, meta.level, architecture.appliedRevision].join(':');
+    if (key !== laundryPreviewKey) {
+      laundryPreviewKey = key;
+      laundryPreviewResult = manualLaundryPair(cells, town, laundryStart, [meta.id, meta.level]);
+    }
+    const pair = laundryPreviewResult.pair;
+    laundryInstruction(
+      laundryPreviewResult.error || 'Klicka för att fästa linan · samma huspar tar bort den',
+    );
+    if (!pair) return;
+    const a = laundryPreview.geometry.attributes.position;
+    for (let k = 0; k <= 32; k++) {
+      const t = k / 32;
+      a.setXYZ(
+        k,
+        pair.a[0] + (pair.b[0] - pair.a[0]) * t,
+        pair.a[1] + (pair.b[1] - pair.a[1]) * t - Math.sin(t * Math.PI) * 0.17,
+        pair.a[2] + (pair.b[2] - pair.a[2]) * t,
+      );
+    }
+    a.needsUpdate = true;
+    laundryPreview.geometry.computeBoundingSphere();
+    laundryPreview.visible = true;
+  }
+  function editLaundry(remove, requestedRay) {
+    if (remove) {
+      resetLaundry();
+      dirty = true;
+      return;
+    }
+    const hit = architecture.raycast(requestedRay),
+      meta = hit?.meta;
+    if (!meta || meta.level < 1 || town.get(meta.id)?.[meta.level] == null) {
+      toast('Klicka på ett hus för att fästa tvättlinan.');
+      return;
+    }
+    if (!laundryStart) {
+      laundryStart = [meta.id, meta.level];
+      laundryMarkerPoint = requestedRay.at(Math.max(0, hit.distance - 0.035), new T.Vector3());
+      laundryInstruction('Välj andra huset · högerklick eller Escape avbryter');
+      dirty = true;
+      return;
+    }
+    if (laundryStart[0] === meta.id) {
+      resetLaundry();
+      dirty = true;
+      return;
+    }
+    const result = manualLaundryPair(cells, town, laundryStart, [meta.id, meta.level]);
+    if (result.error) {
+      toast(result.error);
+      return;
+    }
+    history.push(town);
+    const [aid, al] = laundryStart,
+      bid = meta.id,
+      bl = meta.level,
+      key = laundryKey(aid, bid);
+    const old = town.clotheslines?.find(([a, , b]) => laundryKey(a, b) === key);
+    town.clotheslines = (town.clotheslines || []).filter(([a, , b]) => laundryKey(a, b) !== key);
+    const removing = old && old[1] > 0;
+    town.clotheslines.push(removing ? [aid, 0, bid, 0] : [aid, al, bid, bl]);
+    resetLaundry();
+    rebuild().catch(() => {});
+    toast(removing ? 'Tvättlinan togs bort.' : 'Tvätten är upphängd!');
+  }
   const gridPoints = [];
   for (const c of cells)
     for (let e = 0; e < 4; e++) {
@@ -266,6 +387,10 @@ async function init() {
   $('stone').onclick = () => select(-1);
   function setMode(m) {
     mode = m;
+    resetLaundry();
+    $('laundry-tool').classList.toggle('active', m === 'laundry');
+    $('laundry-tool').setAttribute('aria-pressed', String(m === 'laundry'));
+    $('laundry-instruction').classList.toggle('hidden', m !== 'laundry');
     $('build').classList.toggle('active', domain === 'buildings' && m === 'build');
     $('erase').classList.toggle('active', m === 'erase');
     $('build').setAttribute('aria-pressed', String(domain === 'buildings' && m === 'build'));
@@ -275,7 +400,7 @@ async function init() {
   }
   function selectTerrainTool(tool) {
     terrainTool = tool;
-    for (const name of ['raise', 'lower', 'paint', 'smooth']) {
+    for (const name of ['raise', 'lower', 'paint', 'smooth', 'slope']) {
       $(name).classList.toggle('active', name === tool);
       $(name).setAttribute('aria-pressed', String(name === tool));
     }
@@ -283,6 +408,10 @@ async function init() {
   }
   function setDomain(value) {
     domain = value;
+    resetLaundry();
+    $('laundry-tool').classList.remove('active');
+    $('laundry-tool').setAttribute('aria-pressed', 'false');
+    $('laundry-instruction').classList.add('hidden');
     mode = 'build';
     $('building-palette').classList.toggle('hidden', value !== 'buildings');
     $('terrain-palette').classList.toggle('hidden', value !== 'terrain');
@@ -316,7 +445,7 @@ async function init() {
     };
     $('materials').appendChild(b);
   });
-  for (const tool of ['raise', 'lower', 'paint', 'smooth'])
+  for (const tool of ['raise', 'lower', 'paint', 'smooth', 'slope'])
     $(tool).onclick = () => {
       mode = 'build';
       $('erase').setAttribute('aria-pressed', 'false');
@@ -345,6 +474,7 @@ async function init() {
     requestedRay = null,
     paint = selected,
     landscape = domain === 'terrain',
+    landscapeTool = terrainTool,
   ) {
     if (!requestedRay && (Math.abs(pointer.x) > 1 || Math.abs(pointer.y) > 1)) return null;
     if (!requestedRay) ray.setFromCamera(pointer, camera);
@@ -354,7 +484,7 @@ async function init() {
       const meta = hit.meta;
       if (!meta) return null;
       let { id, level, edge } = meta;
-      if (landscape) return { id, level: elevation(town, id) };
+      if (landscape) return terrainPick(meta, cells, town, remove ? 'lower' : landscapeTool);
       if (level === -1) {
         if (remove || town.has(id)) return null;
         return { id, level: paint === -1 ? 0 : 1 };
@@ -369,7 +499,7 @@ async function init() {
       else {
         const absolute = level + elevation(town, id);
         id = cells[id].neighbors[edge];
-        level = Math.max(0, absolute - elevation(town, id));
+        level = Math.max(0, Math.round(absolute - elevation(town, id)));
       }
       if (id < 0 || level + elevation(town, id) > 24 || town.get(id)?.[level] != null) return null;
       return { id, level };
@@ -397,6 +527,10 @@ async function init() {
       highlight.visible = ghost.visible = false;
       return;
     }
+    if (mode === 'laundry') {
+      previewLaundry();
+      return;
+    }
     hover = pick(mode === 'erase' || (domain === 'terrain' && terrainTool === 'lower'));
     highlight.visible = ghost.visible = !!hover;
     if (!hover) return;
@@ -410,11 +544,11 @@ async function init() {
       offset = groundY(town, hover.id),
       y =
         domain === 'terrain'
-          ? Math.max(0.035, offset + (terrainTool === 'raise' ? FLOOR : 0.035))
+          ? Math.max(0.035, offset + (terrainTool === 'raise' ? FLOOR * TERRAIN_STEP : 0.035))
           : offset + (hover.level === 0 ? BASE + 0.018 : BASE + hover.level * FLOOR + roofMargin),
       bottom =
         domain === 'terrain'
-          ? Math.max(0.015, offset - (terrainTool === 'lower' ? FLOOR : 0))
+          ? Math.max(0.015, offset - (terrainTool === 'lower' ? FLOOR * TERRAIN_STEP : 0))
           : offset + (hover.level === 0 ? 0.01 : BASE + (hover.level - 1) * FLOOR + 0.02);
     const hoverKey = [
       hover.id,
@@ -434,30 +568,29 @@ async function init() {
     lastHoverKey = hoverKey;
     const lines = [],
       tri = [];
-    for (let e = 0; e < 4; e++) {
-      const a = c.points[e],
-        b = c.points[(e + 1) % 4];
-      lines.push(a[0], y, a[1], b[0], y, b[1], a[0], bottom, a[1], a[0], y, a[1]);
-      tri.push(
-        a[0],
-        bottom,
-        a[1],
-        a[0],
-        y,
-        a[1],
-        b[0],
-        y,
-        b[1],
-        a[0],
-        bottom,
-        a[1],
-        b[0],
-        y,
-        b[1],
-        b[0],
-        bottom,
-        b[1],
+    let highPoints = c.points.map((p) => [p[0], y, p[1]]),
+      lowPoints = c.points.map((p) => [p[0], bottom, p[1]]);
+    if (domain === 'terrain') {
+      const preview = new Map(town);
+      preview.terrain = new Map(town.terrain || []);
+      sculpt(preview, c.id, terrainTool, terrainMaterial, cells);
+      const current = cornerHeights(c, town.terrain || new Map(), town),
+        next = cornerHeights(c, preview.terrain, preview);
+      highPoints = c.points.map((p, i) =>
+        terrainPoint(p, Math.max(0.035, Math.max(current[i], next[i]) + 0.025)),
       );
+      lowPoints = c.points.map((p, i) =>
+        terrainPoint(p, Math.max(0.015, Math.min(current[i], next[i]) + 0.015)),
+      );
+    }
+    for (let e = 0; e < 4; e++) {
+      const n = (e + 1) % 4,
+        a = highPoints[e],
+        b = highPoints[n],
+        c = lowPoints[e],
+        d = lowPoints[n];
+      lines.push(...a, ...b, ...c, ...a);
+      tri.push(...c, ...a, ...b, ...c, ...b, ...d);
     }
     highlight.geometry.attributes.position.array.set(lines);
     ghost.geometry.attributes.position.array.set(tri);
@@ -501,7 +634,7 @@ async function init() {
     remove = false,
     requestedRay = null,
     paint = selected,
-    context = { domain, tool: terrainTool, material: terrainMaterial },
+    context = { domain, mode, tool: terrainTool, material: terrainMaterial },
   ) {
     if (!requestedRay) {
       ray.setFromCamera(pointer, camera);
@@ -517,14 +650,22 @@ async function init() {
         .catch(() => {});
       return;
     }
-    const target = pick(remove, requestedRay, paint, context.domain === 'terrain');
+    if (context.mode === 'laundry') {
+      editLaundry(remove, requestedRay);
+      return;
+    }
+    const target = pick(remove, requestedRay, paint, context.domain === 'terrain', context.tool);
     if (!target) return;
     if (context.domain === 'terrain') {
       if (context.stroke?.seen.has(target.id)) return;
       const next = new Map(town);
       next.terrain = new Map(town.terrain || []);
-      if (!sculpt(next, target.id, remove ? 'lower' : context.tool, context.material, cells))
+      next.clotheslines = town.clotheslines?.map((line) => line.slice());
+      if (!sculpt(next, target.id, remove ? 'lower' : context.tool, context.material, cells)) {
+        if (context.tool === 'slope' && !remove)
+          toast('Välj öppen mark bredvid en lägre granne. Höjdskillnad: ett eller två halvsteg.');
         return;
+      }
       if (!context.stroke?.saved) history.push(town);
       if (context.stroke) {
         context.stroke.saved = true;
@@ -547,6 +688,8 @@ async function init() {
       levels[target.level] = target.level === 0 ? 0 : Math.max(0, paint);
       if (elevation(town, target.id) && levels[0] == null) levels[0] = 0;
       town.set(target.id, levels);
+      if (town.terrain?.get(target.id)?.length === 3)
+        town.terrain.set(target.id, town.terrain.get(target.id).slice(0, 2));
     }
     rebuild(remove ? null : { id: target.id, level: target.level }).catch(() => {});
     plop(remove);
@@ -636,6 +779,7 @@ async function init() {
   canvas.addEventListener('pointerleave', () => {
     pointer.set(10, 10);
     highlight.visible = ghost.visible = false;
+    laundryPreview.visible = false;
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   controls.addEventListener('change', () => (dirty = true));
@@ -647,14 +791,26 @@ async function init() {
     setDomain('terrain');
     selectTerrainTool('raise');
   };
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && mode === 'laundry') {
+      resetLaundry();
+      dirty = true;
+    }
+  });
+  $('laundry-tool').onclick = () => {
+    setDomain('buildings');
+    setMode('laundry');
+  };
   $('erase').onclick = () => setMode('erase');
   $('undo').onclick = () => {
     editGeneration++;
+    resetLaundry();
     town = history.undo(town, cells.length);
     rebuild().catch(() => {});
   };
   $('redo').onclick = () => {
     editGeneration++;
+    resetLaundry();
     town = history.redo(town, cells.length);
     rebuild().catch(() => {});
   };
@@ -781,6 +937,7 @@ async function init() {
       const text = await profiler.measureAsync('import.fileRead', () => f.text());
       const loaded = profiler.measure('storage.deserialize', () => deserialize(text, cells.length));
       editGeneration++;
+      resetLaundry();
       history.push(town);
       town = loaded;
       await rebuild();
@@ -793,6 +950,7 @@ async function init() {
   };
   $('landscape-demo').onclick = async () => {
     editGeneration++;
+    resetLaundry();
     history.push(town);
     town = landscapeDemo(cells);
     await rebuild();
@@ -804,6 +962,7 @@ async function init() {
   };
   $('new').onclick = () => {
     editGeneration++;
+    resetLaundry();
     history.push(town);
     town = new Map();
     rebuild().catch(() => {});
@@ -958,6 +1117,7 @@ async function init() {
         revision: architecture.revision,
         appliedRevision: architecture.appliedRevision,
         fps,
+        clotheslines: laundry.count,
         backend: renderer.backend.isWebGPUBackend ? 'WebGPU' : 'unknown',
         ao: env.aoStrength.value,
         shadows: env.sun.shadow.intensity > 0,
@@ -980,7 +1140,11 @@ async function init() {
     },
     projectTerrain(id) {
       const c = cells[id],
-        p = new T.Vector3(c.center[0], groundY(town, id) + 0.01, c.center[1]).project(camera);
+        p = new T.Vector3(
+          c.center[0],
+          cornerHeights(c, town.terrain || new Map(), town).reduce((a, b) => a + b, 0) / 4 + 0.01,
+          c.center[1],
+        ).project(camera);
       return { x: ((p.x + 1) * innerWidth) / 2, y: ((1 - p.y) * innerHeight) / 2 };
     },
     projectFace(id, level, edge) {

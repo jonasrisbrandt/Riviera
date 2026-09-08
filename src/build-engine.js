@@ -1,5 +1,6 @@
+import { addHeroes } from './hero-builder.js';
 import { buildTerrain, attachTerrain, emptyCell } from './terrain-builder.js';
-import { FLOOR } from './palette.js';
+import { FLOOR, BASE } from './palette.js';
 import { planRoofs } from './roofs.js';
 import { buildCell } from './cell-builder.js';
 import { mergeGeometry, packInstances } from './geometry-data.js';
@@ -30,6 +31,7 @@ export class BuildEngine {
       }
   }
   build(town, ack = new Map(), terrain = town.terrain || new Map()) {
+    town.terrain = terrain;
     const dirty = new Set(),
       ids = new Set([
         ...town.keys(),
@@ -42,7 +44,7 @@ export class BuildEngine {
         b = this.town.get(id);
       const ta = terrain.get(id),
         tb = this.terrain.get(id);
-      const terrainSame = ta?.[0] === tb?.[0] && ta?.[1] === tb?.[1];
+      const terrainSame = ta?.[0] === tb?.[0] && ta?.[1] === tb?.[1] && ta?.[2] === tb?.[2];
       if (terrainSame && a?.length === b?.length && (!a || a.every((v, i) => v === b[i]))) continue;
       dirty.add(id);
       for (const v of this.cells[id].vertices)
@@ -50,14 +52,17 @@ export class BuildEngine {
     }
     const groundLevel = (id) => terrain.get(id)?.[0] || 0;
     // Roof connectivity is evaluated at absolute storeys, including differences in ground height.
-    const roofTown = terrain.size
-      ? new Map(
-          [...town].map(([id, levels]) => [
-            id,
-            [...Array(groundLevel(id)).fill(null), null, ...levels.slice(1)],
-          ]),
-        )
-      : town;
+    const roofTowns = [0, 0.5].map(
+      (fraction) =>
+        new Map(
+          [...town]
+            .filter(([id]) => groundLevel(id) % 1 === fraction)
+            .map(([id, levels]) => [
+              id,
+              [...Array(Math.floor(groundLevel(id))).fill(null), null, ...levels.slice(1)],
+            ]),
+        ),
+    );
     const perspectives = new Map();
     const relativeTown = (offset) => {
       if (!terrain.size) return town;
@@ -67,19 +72,50 @@ export class BuildEngine {
         const levels = [],
           ground = groundLevel(id),
           source = town.get(id) || [];
-        for (let y = 0; y < ground + source.length; y++) {
-          const relative = y - offset;
-          levels[relative] = y < ground ? 0 : source[y - ground];
+        // Wall connectivity uses whole local storeys. Half-offset houses remain separate.
+        for (let relative = -24; relative < 25; relative++) {
+          const world = relative + offset,
+            local = world - ground;
+          levels[relative] =
+            world < ground ? 0 : Number.isInteger(local) ? (source[local] ?? null) : null;
         }
-        for (let y = 0; y < levels.length; y++) if (levels[y] === undefined) levels[y] = null;
+        while (levels.length && levels.at(-1) == null) levels.pop();
         view.set(id, levels);
       }
+      view.exposedSpans = (id, bottom, upper) => {
+        const ground = groundLevel(id);
+        if (Number.isInteger(ground - offset)) return null;
+        let spans = [[bottom, upper]];
+        const hidden = terrain.has(id) ? [[-100, (ground - offset) * FLOOR]] : [];
+        (town.get(id) || []).forEach((value, level) => {
+          if (value == null) return;
+          hidden.push([
+            (ground - offset) * FLOOR + (level === 0 ? -0.32 : BASE + (level - 1) * FLOOR),
+            (ground - offset) * FLOOR + BASE + level * FLOOR,
+          ]);
+        });
+        for (const [low, high] of hidden)
+          spans = spans.flatMap(([a, b]) =>
+            high <= a || low >= b
+              ? [[a, b]]
+              : [
+                  [a, Math.min(b, low)],
+                  [Math.max(a, high), b],
+                ].filter(([a, b]) => b - a > 1e-5),
+          );
+        return spans;
+      };
       perspectives.set(offset, view);
       return view;
     };
     const oldPlans = this.plans,
       cache = new Map([...new Set(oldPlans.values())].map((p) => [p.signature, p]));
-    const plans = profiler.measure('build.roofPlan', () => planRoofs(this.cells, roofTown, cache));
+    const plans = profiler.measure('build.roofPlan', () => {
+      if (!terrain.size) return planRoofs(this.cells, town, cache);
+      return new Map(
+        roofTowns.flatMap((view, i) => [...planRoofs(this.cells, view, cache, i * 0.5)]),
+      );
+    });
     // Component merges/splits and boundary exposure invalidate the entire affected roof.
     for (const [key, plan] of oldPlans)
       if (plans.get(key) !== plan) for (const id of plan.ids) dirty.add(id);
@@ -122,6 +158,7 @@ export class BuildEngine {
             buildTerrain(this.cells[id], this.cells, town, terrain),
           ),
         );
+        addHeroes(data, this.cells[id], this.cells, town);
         for (const kind of ['wall', 'roof', 'stone', 'land'])
           data[kind].bvh = profiler.measure('build.pickBVH', () =>
             buildBVH(data[kind].attributes.position),
@@ -181,6 +218,9 @@ export class BuildEngine {
       stats: {
         cells: town.size,
         terrainCells: terrain.size,
+        heroInstances: all.reduce((n, c) => n + (c.heroInstances || 0), 0),
+        lighthouses: all.filter((c) => c.hero === 'lighthouse').length,
+        parasols: all.filter((c) => c.hero === 'parasol').length,
         stairs: all.reduce((n, c) => n + (c.stairs || 0), 0),
         blocks: [...town.values()].reduce((n, l) => n + l.filter((v) => v !== null).length, 0),
         floors: [...town.values()].reduce(

@@ -40,6 +40,17 @@
         title="Sten och kaj"
         aria-label="Sten och kaj"
       ></button>
+      <button
+        id="laundry-tool"
+        class="detail-tool"
+        title="Placera tvättlina mellan två hus"
+        aria-label="Tvättlina"
+        aria-pressed="false"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M2 5q10 7 20 0M6 7v10h5V9m3 0v10h5V7" /></svg
+        ><span>Tvätt</span>
+      </button>
     </aside>
     <aside
       id="terrain-palette"
@@ -58,6 +69,13 @@
         <button id="paint" title="Måla mark" aria-label="Måla mark">◒<span>Måla</span></button>
         <button id="smooth" title="Jämna mark mot grannarna" aria-label="Jämna mark">
           ≈<span>Jämna</span>
+        </button>
+        <button
+          id="slope"
+          title="Luta mot en lägre granne. Klicka igen för att byta riktning eller plana ut."
+          aria-label="Skapa sluttning"
+        >
+          ◿<span>Slutta</span>
         </button>
       </div>
     </aside>
@@ -105,7 +123,18 @@
         <dt>Klicka på en vägg</dt>
         <dd>Låt byn växa åt sidan</dd>
         <dt>Landskap (L)</dt>
-        <dd>Höj marken ett steg med ett klick</dd>
+        <dd>Höj marken en halv husvåning med ett klick</dd>
+        <dt>Tvättlina (under husfärgerna)</dt>
+        <dd>
+          Klicka på två husvåningar. Samma huspar igen tar bort linan. Escape eller högerklick
+          avbryter.
+        </dd>
+        <dt>Slutta</dt>
+        <dd>
+          Luta öppen mark mot en lägre granne. Klicka igen för nästa riktning eller plan mark.
+        </dd>
+        <dt>Klicka på en klippa med Höj</dt>
+        <dd>Fyll den lägre rutan framför klippan</dd>
         <dt>Högerklick / suddgummi</dt>
         <dd>Ta bort ett block eller sänk mark</dd>
         <dt>Alt + dra / två fingrar</dt>
@@ -120,9 +149,11 @@
       <p class="small">
         I landskapsläge kan du också dra med musen för att forma flera celler i ett svep. Varje svep
         kan ångras. Hus följer med när marken höjs eller sänks. Klippor, terrasser och trappor växer
-        fram automatiskt. Din by sparas på den här enheten.
+        fram automatiskt. Fyrar dyker upp på kajspetsar, parasoll på öppna platser och tvättlinor
+        mellan hus över en ledig ruta. Din by sparas på den här enheten.
       </p>
     </section>
+    <div id="laundry-instruction" class="hidden" role="status"></div>
     <div id="toast" role="status"></div>
     <div class="bottom">
       <div class="location">

@@ -2,24 +2,35 @@ import { Color, ShapeUtils, Vector2, IcosahedronGeometry } from 'three';
 import { Batch, mergeGeometry } from './geometry-data.js';
 import { FLOOR } from './palette.js';
 import { random, inside } from './grid.js';
+import { cornerHeights, isBeach } from './terrain.js';
 const rockPrototype = new IcosahedronGeometry(1, 0).attributes.position.array;
 const tint = (hex, n) => new Color(hex).multiplyScalar(n);
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-// All cells share this boundary function, including intermediate cliff rings.
-// Adjacent cliffs and grass caps meet exactly; no independent corner jitter.
-function point(p, y) {
+// Shared corners retain the same position at every elevation.
+export function terrainPoint(p, y) {
   const band = FLOOR / 2,
     lo = Math.floor(y / band) * band,
     t = (y - lo) / band;
   const drift = (h) => [
-    Math.sin(p[0] * 2.1 + p[1] * 1.7 + h * 2) * 0.14,
-    Math.sin(p[1] * 2.3 - p[0] * 1.3 + h * 1.6) * 0.14,
+    Math.sin(p[0] * 2.1 + p[1] * 1.7 + h * 2) * 0.09,
+    Math.sin(p[1] * 2.3 - p[0] * 1.3 + h * 1.6) * 0.09,
   ];
-  const a = drift(lo),
-    b = drift(lo + band);
-  return [p[0] + a[0] * (1 - t) + b[0] * t, y, p[1] + a[1] * (1 - t) + b[1] * t];
+  const d = lerp(drift(lo), drift(lo + band), t);
+  return [p[0] + d[0], y, p[1] + d[1]];
 }
-const edgePoint = (a, b, t, y) => lerp(point(a, y), point(b, y), t);
+// Rounded, uneven toes meet the sea; endpoints are shared with the next edge.
+export function shorePoint(cell, e, t, y = -0.025, beach = false) {
+  const a = terrainPoint(cell.points[e], y),
+    b = terrainPoint(cell.points[(e + 1) % 4], y);
+  const dx = b[0] - a[0],
+    dz = b[2] - a[2],
+    length = Math.hypot(dx, dz);
+  const v = lerp(a, b, t),
+    bulge = Math.sin(Math.PI * t) * (beach ? 0.5 : 0.22 + 0.1 * Math.sin(cell.id + e * 3));
+  v[0] += (dz / length) * bulge;
+  v[2] -= (dx / length) * bulge;
+  return v;
+}
 export function buildTerrain(cell, cells, town, terrain) {
   const land = new Batch(),
     stone = new Batch(),
@@ -31,286 +42,282 @@ export function buildTerrain(cell, cells, town, terrain) {
   const y = h * FLOOR,
     p = cell.points,
     center = cell.center;
+  const heights = cornerHeights(cell, terrain, town),
+    ramp = heights.some((v) => v !== y);
+  const top = p.map((v, i) => terrainPoint(v, heights[i]));
   const level = (n) => terrain.get(n)?.[0] || 0;
   const built = (n) => (town.get(n)?.length || 0) > 1;
   const cultivated = material === 0 && (built(cell.id) || cell.neighbors.some(built));
-  const beach =
-    h === 1 &&
-    (material === 4 ||
-      (material === 0 &&
-        !cultivated &&
-        cell.id % 4 === 1 &&
-        cell.neighbors.filter((n) => level(n) === 0).length > 1));
-  const green = (material === 1 || material === 0) && !beach;
+  const beach = isBeach(cell, { get: (id) => town.get(id), terrain });
+  const green = (material === 0 || material === 1) && !beach;
   const topColor = beach
     ? '#dfcda4'
     : material === 2
       ? '#b8af99'
       : material === 3
         ? '#bca378'
-        : material === 4
-          ? '#e1ce9f'
-          : h === 1
-            ? '#a8b77b'
-            : '#92a65e';
-  const meta = { id: cell.id, level: -1, edge: -1 };
-  const rng = random(cell.id * 419 + 31);
+        : h <= 1
+          ? '#a8b77b'
+          : '#92a65e';
+  const meta = { id: cell.id, level: -1, edge: -1 },
+    rng = random(cell.id * 419 + 31);
   const add = (kind, pos, size, col, yaw = 0) =>
     instances[kind].push({ p: pos, s: size, col, yaw, key: -2, base: 0 });
-  const box = (pos, size, col, yaw = 0) => add('box', pos, size, col, yaw);
-  let stairs = 0,
-    stairEdge = -1;
-  const stairFits = (e) => {
-    const a = point(p[e], y),
-      b = point(p[(e + 1) % 4], y),
-      dx = b[0] - a[0],
-      dz = b[2] - a[2],
-      len = Math.hypot(dx, dz);
-    const inward = [-dz / len, dx / len],
-      depth =
-        (center[0] - (a[0] + b[0]) / 2) * inward[0] + (center[1] - (a[2] + b[2]) / 2) * inward[1];
-    if (depth < 0.45 || len < 1.2) return false;
-    const run = Math.min(0.95, depth * 0.8),
-      width = Math.min(0.72, len * 0.45);
-    const polygon = p.map((v) => {
-      const q = point(v, y);
-      return [q[0], q[2]];
-    });
-    return [-1, 1].every((sign) =>
-      inside(
-        [
-          (a[0] + b[0]) / 2 + (((sign * dx) / len) * width) / 2 + inward[0] * run,
-          (a[2] + b[2]) / 2 + (((sign * dz) / len) * width) / 2 + inward[1] * run,
-        ],
-        polygon,
-      ),
-    );
-  };
-  if (cultivated && !town.has(cell.id)) {
-    stairEdge = cell.neighbors.findIndex(
-      (n, e) =>
-        n >= 0 &&
-        level(n) === h - 1 &&
-        h > 1 &&
-        stairFits(e) &&
-        Math.hypot(p[e][0] - p[(e + 1) % 4][0], p[e][1] - p[(e + 1) % 4][1]) > 1.1,
-    );
+  let stairEdge = -1,
+    stair = null;
+  // One coordinate frame serves the opening, its walls, every step and the landing.
+  if (cultivated && !town.has(cell.id) && !ramp) {
+    for (let e = 0; e < 4; e++) {
+      const n = cell.neighbors[e],
+        drop = h - level(n);
+      if (n < 0 || level(n) <= 0 || drop < 0.5 || drop > 1 || terrain.get(n)?.length === 3)
+        continue;
+      const a = top[e],
+        b = top[(e + 1) % 4],
+        dx = b[0] - a[0],
+        dz = b[2] - a[2],
+        len = Math.hypot(dx, dz);
+      const inward = [-dz / len, dx / len],
+        depth =
+          (center[0] - (a[0] + b[0]) / 2) * inward[0] + (center[1] - (a[2] + b[2]) / 2) * inward[1];
+      const width = Math.min(0.72, len * 0.42),
+        run = Math.min(drop * 1.05, depth * 0.75);
+      if (len < 1.15 || run < 0.35) continue;
+      const at = (t, d = 0, yy = y) => {
+        const v = lerp(a, b, t);
+        return [v[0] + inward[0] * d, yy, v[2] + inward[1] * d];
+      };
+      const t0 = 0.5 - width / len / 2,
+        t1 = 0.5 + width / len / 2;
+      if (
+        ![t0, t1].every((t) => {
+          const v = at(t, run + 0.035);
+          return inside(
+            [v[0], v[2]],
+            top.map((v) => [v[0], v[2]]),
+          );
+        })
+      )
+        continue;
+      stairEdge = e;
+      stair = { at, t0, t1, width, run, low: level(n) * FLOOR, len };
+      break;
+    }
   }
   const contour = [];
+  const face = (batch, a, b, c, d, col, m = meta) =>
+    batch.quad(
+      a,
+      b,
+      c,
+      d,
+      col,
+      m,
+      Math.hypot(c[0] - b[0], c[2] - b[2]),
+      Math.abs(b[1] - a[1]) || 0.1,
+    );
   for (let e = 0; e < 4; e++) {
-    const a = p[e],
-      b = p[(e + 1) % 4],
-      nh = level(cell.neighbors[e]),
-      delta = h - nh;
-    const dx = b[0] - a[0],
-      dz = b[1] - a[1],
-      len = Math.hypot(dx, dz);
-    // Positive inward points towards the cell centre (CCW XZ perimeter).
-    const inward = [-dz / len, dx / len];
-    const at = (t, depth = 0, yy = y) => [
-      edgePoint(a, b, t, y)[0] + inward[0] * depth,
-      yy,
-      edgePoint(a, b, t, y)[2] + inward[1] * depth,
-    ];
-    const width = Math.min(0.72, len * 0.45),
-      t0 = 0.5 - width / len / 2,
-      t1 = 0.5 + width / len / 2,
-      run = Math.min(
-        0.95,
-        Math.max(
-          0.25,
-          ((center[0] - (a[0] + b[0]) * 0.5) * inward[0] +
-            (center[1] - (a[1] + b[1]) * 0.5) * inward[1]) *
-            0.8,
-        ),
-      );
-    contour.push(point(a, y));
+    const next = (e + 1) % 4,
+      n = cell.neighbors[e],
+      nh = level(n);
+    const a = top[e],
+      b = top[next],
+      edgeMeta = { ...meta, edge: e };
+    const neighbor = n >= 0 ? cells[n] : null;
+    const neighborHeights = neighbor ? cornerHeights(neighbor, terrain, town) : null;
+    const neighborY = (i) =>
+      neighbor ? neighborHeights[neighbor.vertices.indexOf(cell.vertices[i])] : 0;
+    const lowA = nh ? terrainPoint(p[e], neighborY(e)) : shorePoint(cell, e, 0, -0.26, beach);
+    const lowB = nh ? terrainPoint(p[next], neighborY(next)) : shorePoint(cell, e, 1, -0.26, beach);
+    const upperAt = (t) => lerp(a, b, t),
+      lowerAt = (t) => (nh ? lerp(lowA, lowB, t) : shorePoint(cell, e, t, -0.26, beach));
+    contour.push(a);
     if (e === stairEdge) {
+      const { at, t0, t1, run, low, width } = stair;
       contour.push(at(t0), at(t0, run), at(t1, run), at(t1));
-      stairs++;
-      const yaw = Math.atan2(-dz, dx),
-        low = nh * FLOOR;
-      const steps = 8;
+      const steps = Math.round((y - low) / 0.145);
+      // Actual mesh steps participate in picking and close the entire cut, including the back.
       for (let k = 0; k < steps; k++) {
-        const top = low + ((k + 1) * FLOOR) / steps;
-        box(
-          at(0.5, ((k + 0.5) * run) / steps, (low + top) / 2),
-          [width, top - low, run / steps + 0.008],
-          '#ccc4a9',
-          yaw,
+        const front = (k * run) / steps,
+          back = ((k + 1) * run) / steps,
+          bottom = low + (k * (y - low)) / steps,
+          high = low + ((k + 1) * (y - low)) / steps;
+        face(
+          stone,
+          at(t0, front, bottom),
+          at(t0, front, high),
+          at(t1, front, high),
+          at(t1, front, bottom),
+          '#c4bda5',
+          meta,
         );
-        box(
-          at(0.5, ((k + 0.5) * run) / steps, top + 0.015),
-          [width + 0.025, 0.03, run / steps + 0.025],
-          '#e4dcc3',
-          yaw,
+        face(
+          stone,
+          at(t0, front, high),
+          at(t0, back, high),
+          at(t1, back, high),
+          at(t1, front, high),
+          '#e0d8bf',
+          meta,
         );
       }
-      // Solid cheeks support both edges of the stair opening.
-      for (const t of [t0 - 0.025, t1 + 0.025]) {
-        const aa = at(t, 0, low),
-          bb = at(t, run, low),
-          cc = at(t, run, y),
-          dd = at(t, 0, y);
-        stone.quad(aa, dd, cc, bb, '#b6b69e', meta, run, FLOOR);
-        stone.quad(bb, cc, dd, aa, '#b6b69e', meta, run, FLOOR);
+      for (const t of [t0, t1]) {
+        face(stone, at(t, 0, low), at(t, 0, y), at(t, run, y), at(t, run, low), '#bab79f');
+        face(stone, at(t, run, low), at(t, run, y), at(t, 0, y), at(t, 0, low), '#bab79f');
+      }
+      face(stone, at(t0, run, low), at(t0, run, y), at(t1, run, y), at(t1, run, low), '#bab79f');
+      // The neighbour's boundary can drift with height; this short landing bridges it exactly.
+      const la = lowerAt(t0),
+        lb = lowerAt(t1);
+      face(stone, la, at(t0, 0, low), at(t1, 0, low), lb, '#dad2b9');
+      face(stone, at(t0, 0, low), at(t0, run, low), at(t1, run, low), at(t1, 0, low), '#c3bca5');
+    }
+    const masonry = cultivated && !ramp && material !== 2 && !beach;
+    const breaks = [0, 1];
+    const len = Math.hypot(b[0] - a[0], b[2] - a[2]),
+      segments = Math.max(3, Math.ceil(len / 0.55));
+    for (let j = 1; j < segments; j++) breaks.push(j / segments);
+    if (e === stairEdge) breaks.push(stair.t0, stair.t1);
+    // Split where two crossing ramps exchange which side is exposed.
+    const da = a[1] - lowA[1],
+      db = b[1] - lowB[1];
+    if (da * db < 0) breaks.push(da / (da - db));
+    breaks.sort((a, b) => a - b);
+    for (let j = 0; j < breaks.length - 1; j++) {
+      const ta = breaks[j],
+        tb = breaks[j + 1];
+      if (tb - ta < 1e-7) continue;
+      const ua = upperAt(ta),
+        ub = upperAt(tb),
+        la = lowerAt(ta),
+        lb = lowerAt(tb);
+      if ((ua[1] + ub[1] - la[1] - lb[1]) / 2 < 0.0001) continue;
+      // A stair cuts only above its landing, never through the cliff below it.
+      const opening = e === stairEdge && ta >= stair.t0 - 1e-6 && tb <= stair.t1 + 1e-6;
+      const capA = opening ? stair.low : ua[1],
+        capB = opening ? stair.low : ub[1];
+      const wallStart = masonry ? Math.max(Math.max(la[1], lb[1]), y - 2 * FLOOR) : Infinity;
+      const levels = [0, 1];
+      const rise = Math.max(capA - la[1], capB - lb[1]);
+      // Every shared corner uses the same world-height knots, regardless of cliff height.
+      for (const [low, cap] of [
+        [la[1], capA],
+        [lb[1], capB],
+      ])
+        for (
+          let yy = (Math.floor(low / (FLOOR / 2)) + 1) * (FLOOR / 2);
+          yy < cap - 1e-6;
+          yy += FLOOR / 2
+        )
+          levels.push((yy - low) / (cap - low));
+      if (masonry && rise > 0)
+        levels.push(Math.max(0, Math.min(1, (wallStart - la[1]) / (capA - la[1] || 1))));
+      if (green && !opening && !masonry)
+        levels.push(Math.max(0, 1 - 0.065 / Math.max(rise, 0.065)));
+      levels.sort((a, b) => a - b);
+      const side = (t, f, low, up, cap) => {
+        const endpoint = lerp(up, low, (up[1] - cap) / Math.max(1e-6, up[1] - low[1]));
+        const v = lerp(low, endpoint, f);
+        const driftAt = (yy) => lerp(terrainPoint(p[e], yy), terrainPoint(p[next], yy), t);
+        const curved = driftAt(v[1]),
+          straight = lerp(driftAt(low[1]), driftAt(cap), f);
+        v[0] += curved[0] - straight[0];
+        v[2] += curved[2] - straight[2];
+        return v;
+      };
+      for (let k = 0; k < levels.length - 1; k++) {
+        const f0 = levels[k],
+          f1 = levels[k + 1];
+        if (f1 - f0 < 1e-7) continue;
+        const aa = side(ta, f0, la, ua, capA),
+          bb = side(tb, f0, lb, ub, capB),
+          cc = side(ta, f1, la, ua, capA),
+          dd = side(tb, f1, lb, ub, capB);
+        const isStone = masonry && (aa[1] + bb[1]) / 2 >= wallStart - 1e-5;
+        const lip = green && !masonry && !opening && f0 >= 1 - 0.066 / Math.max(rise, 0.065);
+        const col = lip
+          ? tint(topColor, 0.91)
+          : beach
+            ? tint('#d8c59f', 0.95 + rng() * 0.07)
+            : tint('#bcb19a', 0.94 + rng() * 0.12);
+        face(isStone ? stone : land, aa, cc, dd, bb, isStone ? '#c7c1aa' : col, edgeMeta);
       }
     }
-    if (delta <= 0) continue;
-    if (nh === 0 && !beach && material !== 4 && cell.id % 3 !== 1) {
+    if (!nh && !beach && cell.id % 3 !== 1) {
       const r = random(cell.id * 313 + e);
       for (let k = 0; k < 2; k++) {
-        const t = 0.25 + k * 0.5,
-          scale = 0.24 + r() * 0.22;
-        const pos = at(t, -0.16 - r() * 0.16, 0.06 + scale * 0.23);
+        const t = 0.2 + k * 0.57,
+          scale = 0.19 + r() * 0.18,
+          pos = shorePoint(cell, e, t, 0, beach);
+        pos[1] = scale * 0.1;
         for (let i = 0; i < rockPrototype.length; i += 9) {
-          const vertices = [];
+          const verts = [];
           for (let j = 0; j < 9; j += 3)
-            vertices.push([
+            verts.push([
               pos[0] + rockPrototype[i + j] * scale,
-              pos[1] + rockPrototype[i + j + 1] * scale * 0.88,
-              pos[2] + rockPrototype[i + j + 2] * scale * 1.1,
+              pos[1] + rockPrototype[i + j + 1] * scale * 0.85,
+              pos[2] + rockPrototype[i + j + 2] * scale,
             ]);
-          land.tri(...vertices, tint('#b8af9a', 0.94 + r() * 0.1), meta);
+          // Decorative rocks never steal the neighbouring hole's pick target.
+          land.tri(...verts, tint('#b7af9b', 0.94 + r() * 0.09), edgeMeta);
         }
       }
-    }
-    if (beach && nh === 0) {
-      const ta = point(a, y * 0.3),
-        tb = point(b, y * 0.3),
-        fa = point(a, -0.06),
-        fb = point(b, -0.06);
-      for (const v of [fa, fb]) {
-        v[0] -= inward[0] * 0.22;
-        v[2] -= inward[1] * 0.22;
-      }
-      land.quad(fa, ta, tb, fb, '#e0cca3', meta);
-      land.tri(point(a, -0.15), ta, fa, '#cdb992', meta);
-      land.tri(point(b, -0.15), fb, tb, '#cdb992', meta);
-    }
-    const masonry = cultivated && material !== 2 && material !== 4;
-    const wallBottom = masonry ? Math.max(nh * FLOOR, y - 2 * FLOOR) : y - (green ? 0.095 : 0);
-    const segments = Math.max(2, Math.ceil(len / 0.65));
-    for (let j = 0; j < segments; j++) {
-      const ta = j / segments,
-        tb = (j + 1) / segments;
-      const pa = lerp(a, b, ta),
-        pb = lerp(a, b, tb);
-      const low = nh ? nh * FLOOR : -0.26;
-      for (let bottom = low; bottom < wallBottom - 0.001;) {
-        const upper = Math.min(wallBottom, Math.floor((bottom + 0.01) / 0.58 + 1) * 0.58);
-        const aa = edgePoint(a, b, ta, bottom),
-          bb = edgePoint(a, b, tb, bottom),
-          cc = edgePoint(a, b, ta, upper),
-          dd = edgePoint(a, b, tb, upper);
-        const col = tint('#c1b59e', 0.95 + rng() * 0.08);
-        land.tri(aa, cc, dd, col, { ...meta, edge: e });
-        land.tri(aa, dd, bb, tint(col, 0.98 + rng() * 0.035), { ...meta, edge: e });
-        bottom = upper;
-      }
-    }
-    if (masonry) {
-      const parts =
-        e === stairEdge
-          ? [
-              [0, t0],
-              [t1, 1],
-            ]
-          : [[0, 1]];
-      for (const [ta, tb] of parts) {
-        const aa = edgePoint(a, b, ta, wallBottom),
-          bb = edgePoint(a, b, tb, wallBottom);
-        const cc = edgePoint(a, b, ta, y - 0.055),
-          dd = edgePoint(a, b, tb, y - 0.055);
-        for (let low = wallBottom; low < y - 0.055 - 0.0001;) {
-          const high = Math.min(y - 0.055, (Math.floor((low + 0.0001) / 0.58) + 1) * 0.58);
-          stone.quad(
-            edgePoint(a, b, ta, low),
-            edgePoint(a, b, ta, high),
-            edgePoint(a, b, tb, high),
-            edgePoint(a, b, tb, low),
-            '#c0bda5',
-            { ...meta, edge: e },
-            len * (tb - ta) * 0.63,
-            (high - low) * 0.63,
-          );
-          low = high;
-        }
-        stone.quad(
-          cc,
-          edgePoint(a, b, ta, y),
-          edgePoint(a, b, tb, y),
-          dd,
-          '#e0d8ba',
-          meta,
-          len * (tb - ta),
-          0.055,
-        );
-      }
-    } else if (green) {
-      // A narrow grass lip follows the faceted cliff instead of a floating cap.
-      land.quad(
-        point(a, y - 0.095),
-        point(a, y),
-        point(b, y),
-        point(b, y - 0.095),
-        tint(topColor, 0.92),
-        meta,
-      );
     }
   }
-  // Ear clipping keeps the top out of the automatic stairwell.
-  const coords = contour.map((v) => new Vector2(v[0], v[2]));
-  for (const tri of ShapeUtils.triangulateShape(coords, [])) {
+  for (const tri of ShapeUtils.triangulateShape(
+    contour.map((v) => new Vector2(v[0], v[2])),
+    [],
+  )) {
     const verts = tri.map((i) => contour[i]);
-    // Correct the XZ triangulation to upward-facing world triangles.
-    const n =
+    if (
       (verts[1][2] - verts[0][2]) * (verts[2][0] - verts[0][0]) -
-      (verts[1][0] - verts[0][0]) * (verts[2][2] - verts[0][2]);
-    if (n < 0) verts.reverse();
-    land.tri(...verts, tint(topColor, 0.97 + rng() * 0.06), meta);
+        (verts[1][0] - verts[0][0]) * (verts[2][2] - verts[0][2]) <
+      0
+    )
+      verts.reverse();
+    land.tri(...verts, tint(topColor, 0.985 + rng() * 0.025), meta);
   }
-  if (!town.has(cell.id)) {
-    const cy = y;
-    const shrub = (x, z, s = 0.16) =>
-      add(
-        'sphere',
-        [x, cy + s * 0.55, z],
-        [s, s * 0.7, s * 0.9],
-        tint('#748e53', 0.92 + rng() * 0.2),
-      );
-    if (green && stairEdge < 0 && cell.id % 4 === 0) {
-      const x = center[0] + 0.1,
-        z = center[1] - 0.06;
+  if (!town.has(cell.id) && !ramp && stairEdge < 0) {
+    const x = center[0],
+      z = center[1];
+    if (green && cell.id % 4 === 0) {
+      const trunkHeight = cell.id % 3 !== 0 && cell.id % 5 === 0 ? 1.45 : 1;
+      add('cylinder', [x, y + trunkHeight / 2, z], [0.05, trunkHeight, 0.05], '#78674d');
       if (cell.id % 3 === 0) {
-        add('cylinder', [x, cy + 0.5, z], [0.048, 0.9, 0.048], '#7e7052');
-        add('sphere', [x, cy + 1.08, z], [0.23, 0.94, 0.24], '#3f6545');
-        add('sphere', [x + 0.01, cy + 1.7, z], [0.13, 0.49, 0.14], '#4b7049');
+        add('sphere', [x, y + 1.05, z], [0.22, 0.9, 0.23], '#3f6545');
+        add('sphere', [x, y + 1.65, z], [0.13, 0.48, 0.14], '#4b7049');
       } else {
-        add('cylinder', [x, cy + 0.45, z], [0.06, 0.88, 0.06], '#7b6d50');
-        for (let k = 0; k < 6; k++) {
-          const a = k * 2.4;
+        const pine = cell.id % 5 === 0,
+          flower = cell.id % 7 === 0;
+        for (let k = 0; k < 7; k++) {
+          const a = k * 2.4,
+            radius = pine ? 0.36 : 0.22;
           add(
             'sphere',
-            [x + Math.sin(a) * 0.22, cy + 0.92 + (k % 2) * 0.13, z + Math.cos(a) * 0.22],
-            [0.34, 0.28, 0.32],
-            tint('#7e965d', 0.9 + rng() * 0.18),
+            [
+              x + Math.sin(a) * radius,
+              y + (pine ? 1.4 : 0.95) + (k % 2) * 0.11,
+              z + Math.cos(a) * radius,
+            ],
+            pine ? [0.4, 0.24, 0.39] : [0.32, 0.29, 0.32],
+            tint(flower ? '#c99595' : pine ? '#52754b' : '#7e965d', 0.9 + rng() * 0.16),
           );
         }
       }
     }
-    if (green && cell.id % 2 === 0) {
+    if (green && cell.id % 2 === 0)
       for (let k = 0; k < 3; k++) {
-        const v = lerp(center, p[k], 0.64);
-        if (stairEdge < 0) shrub(v[0], v[1], 0.11 + rng() * 0.1);
+        const v = lerp(center, p[k], 0.64),
+          s = 0.11 + rng() * 0.1;
+        add('sphere', [v[0], y + s * 0.6, v[1]], [s, s * 0.75, s], '#7b9456');
       }
-    }
-    if (material === 2 || cell.id % 9 === 0) {
-      const v = lerp(center, p[0], 0.48);
-      add('sphere', [v[0], cy + 0.13, v[1]], [0.23, 0.21, 0.2], '#b5ae95');
-    }
   }
-  const result = { land: land.finish(), stone: stone.finish(), instances, stairs };
+  const result = {
+    land: land.finish(),
+    stone: stone.finish(),
+    instances,
+    stairs: stairEdge >= 0 ? 1 : 0,
+  };
   for (const kind of ['land', 'stone']) result[kind].attributes.buildKey.fill(-2);
   return result;
 }

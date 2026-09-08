@@ -40,7 +40,10 @@ test('worker geometry is byte-identical to pre-optimization walls, roofs, stone 
     const result = engine.build(new Map(fixture.town));
     assert.deepEqual(cellHashes(engine), fixture.hashes);
     for (const key of ['cells', 'blocks', 'floors', 'instances', 'arches', 'corbels'])
-      assert.equal(result.stats[key], fixture.stats[key]);
+      assert.equal(
+        result.stats[key] - (key === 'instances' ? result.stats.heroInstances : 0),
+        fixture.stats[key],
+      );
   }
 });
 test('incremental output matches a fresh build after edits, roof joins/splits and diagonal support changes', () => {

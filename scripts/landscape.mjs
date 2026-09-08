@@ -54,25 +54,25 @@ try {
   await clear();
   await terrainClick();
   await terrainClick();
-  assert.deepEqual(new Map((await data()).terrain).get(id), [2, 0]);
+  assert.deepEqual(new Map((await data()).terrain).get(id), [1, 0]);
   await page.locator('#build').click();
   await terrainClick();
   assert.deepEqual(new Map((await data()).cells).get(id), [0, 0]);
   await page.locator('#landscape').click();
   await roofClick(1);
-  assert.deepEqual(new Map((await data()).terrain).get(id), [3, 0]);
+  assert.deepEqual(new Map((await data()).terrain).get(id), [1.5, 0]);
   assert.deepEqual(new Map((await data()).cells).get(id), [0, 0]);
   await roofClick(1, 'right');
-  assert.deepEqual(new Map((await data()).terrain).get(id), [2, 0]);
+  assert.deepEqual(new Map((await data()).terrain).get(id), [1, 0]);
   results.push('raise/lower beneath a house preserves its storeys');
   await page.locator('#paint').click();
   await page.getByRole('button', { name: 'Sand', exact: true }).click();
   await roofClick(1);
-  assert.deepEqual(new Map((await data()).terrain).get(id), [2, 4]);
+  assert.deepEqual(new Map((await data()).terrain).get(id), [1, 4]);
   const painted = await snapshot();
   await page.locator('#undo').click();
   await ready();
-  assert.deepEqual(new Map((await data()).terrain).get(id), [2, 0]);
+  assert.deepEqual(new Map((await data()).terrain).get(id), [1, 0]);
   await page.locator('#redo').click();
   await ready();
   assert.equal(await snapshot(), painted);
@@ -147,7 +147,7 @@ try {
   await mobile.locator('#landscape').tap();
   await mobile.waitForTimeout(3000);
   await mobile.screenshot({ path: 'artifacts/landscape-mobile.png' });
-  for (const selector of ['#landscape', '#raise', '#lower', '#paint', '#smooth']) {
+  for (const selector of ['#landscape', '#raise', '#lower', '#paint', '#smooth', '#slope']) {
     const box = await mobile.locator(selector).boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844);
   }

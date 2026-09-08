@@ -15,12 +15,12 @@ function closest(edge, x, z) {
 }
 
 /** One distance field per connected roof, rather than one pyramid per building cell. */
-export function planRoofs(cells, town, previous = new Map()) {
+export function planRoofs(cells, town, previous = new Map(), heightOffset = 0) {
   const plans = new Map(),
     seen = new Set();
   for (const [id, levels] of town)
     for (let level = 1; level < levels.length; level++) {
-      const key = id * 32 + level;
+      const key = id * 32 + level + heightOffset;
       if (levels[level] == null || levels[level + 1] != null || seen.has(key)) continue;
       const members = [],
         queue = [id];
@@ -31,16 +31,17 @@ export function planRoofs(cells, town, previous = new Map()) {
         for (const n of c.neighbors)
           if (
             n >= 0 &&
-            !seen.has(n * 32 + level) &&
+            !seen.has(n * 32 + level + heightOffset) &&
             town.get(n)?.[level] != null &&
             town.get(n)?.[level + 1] == null
           ) {
-            seen.add(n * 32 + level);
+            seen.add(n * 32 + level + heightOffset);
             queue.push(n);
           }
       }
       const signature =
         level +
+        heightOffset +
         ':' +
         members
           .map((c) => c.id)
@@ -54,7 +55,7 @@ export function planRoofs(cells, town, previous = new Map()) {
           .join('');
       const reused = previous.get(signature);
       if (reused) {
-        for (const c of members) plans.set(c.id * 32 + level, reused);
+        for (const c of members) plans.set(c.id * 32 + level + heightOffset, reused);
         continue;
       }
       const ids = new Set(members.map((c) => c.id)),
@@ -176,7 +177,7 @@ export function planRoofs(cells, town, previous = new Map()) {
           return null;
         },
       };
-      for (const c of members) plans.set(c.id * 32 + level, plan);
+      for (const c of members) plans.set(c.id * 32 + level + heightOffset, plan);
     }
   return plans;
 }

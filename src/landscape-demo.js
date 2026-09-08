@@ -1,3 +1,4 @@
+import { sculpt } from './terrain.js';
 import { random } from './grid.js';
 export function landscapeDemo(cells) {
   const town = new Map(),
@@ -50,5 +51,19 @@ export function landscapeDemo(cells) {
       town.set(c.id, [0]);
     }
   }
+  // Half terraces and a few continuous green ramps show the finer sculpting scale.
+  for (const c of cells) {
+    const t = terrain.get(c.id);
+    if (!t || town.has(c.id)) continue;
+    if (t[1] === 4) t[0] = 0.5;
+    else if (
+      c.id % 4 === 1 &&
+      t[0] > 1 &&
+      c.neighbors.some((n) => terrain.get(n)?.[0] === t[0] - 1)
+    )
+      terrain.set(c.id, [t[0] - 0.5, t[1]]);
+  }
+  for (const c of cells)
+    if (c.id % 3 === 1 && !town.has(c.id)) sculpt(town, c.id, 'slope', 0, cells);
   return town;
 }

@@ -1,3 +1,5 @@
+import { isBeach } from './terrain.js';
+import { shorePoint } from './terrain-builder.js';
 import * as T from 'three/webgpu';
 import { profiler } from './profiler.js';
 import {
@@ -56,11 +58,16 @@ export function environment(scene, renderer, camera, cells) {
   fill.position.set(12, 10, -15);
   scene.add(fill);
   const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = maskCanvas.height = 512;
+  const maskSize = 2048;
+  maskCanvas.width = maskCanvas.height = maskSize;
+  const coastCanvas = document.createElement('canvas');
+  coastCanvas.width = coastCanvas.height = maskSize;
+  const coastContext = coastCanvas.getContext('2d');
   const ctx = maskCanvas.getContext('2d');
   const mask = new T.CanvasTexture(maskCanvas);
   mask.minFilter = T.LinearFilter;
   mask.magFilter = T.LinearFilter;
+  mask.generateMipmaps = false;
   const mat = new T.MeshStandardNodeMaterial({ roughness: 0.72, metalness: 0 });
   const x = positionWorld.x,
     z = positionWorld.z;
@@ -89,16 +96,23 @@ export function environment(scene, renderer, camera, cells) {
     positionWorld.x.mul(3.2).add(sin(positionWorld.z.mul(2.7).add(time.mul(0.5)))),
   ).add(cos(positionWorld.z.mul(3.8).add(time.mul(0.35))));
   const sparkle = smoothstep(1.89, 1.99, smallWave).mul(0.027);
-  const foam = sin(shore.mul(37).sub(time.mul(0.75)))
+  const pulse = sin(x.mul(2.8).add(z.mul(3.1)).add(time.mul(1.2))).mul(0.025);
+  const edge = shore.add(pulse);
+  const foam = smoothstep(0.16, 0.34, edge).mul(float(1).sub(smoothstep(0.48, 0.65, edge)));
+  const wash = sin(
+    shore
+      .mul(24)
+      .sub(time.mul(1.3))
+      .add(sin(x.add(z)).mul(0.5)),
+  )
     .mul(0.5)
     .add(0.5)
-    .pow(12)
-    .mul(smoothstep(0.06, 0.2, shore))
-    .mul(float(1).sub(smoothstep(0.72, 0.98, shore)))
-    .mul(0.085);
-  mat.colorNode = mix(color('#73b2bb'), color('#8bcfc6'), shore.mul(0.68)).add(
-    vec3(sparkle.add(foam)),
-  );
+    .pow(8)
+    .mul(smoothstep(0.015, 0.08, shore))
+    .mul(float(1).sub(smoothstep(0.25, 0.45, shore)))
+    .mul(0.23);
+  const waterColor = mix(color('#73b2bb'), color('#8bcfc6'), shore.mul(0.68)).add(vec3(sparkle));
+  mat.colorNode = mix(waterColor, color('#f0f8e9'), foam.mul(0.86).add(wash).clamp(0, 0.93));
   // Fine ripples belong in fragment shading. A flat depth surface avoids
   // undersampling waves on a coarse mesh and keeps water out of false AO.
   const water = new T.Mesh(new T.PlaneGeometry(350, 350).rotateX(-Math.PI / 2), mat);
@@ -106,24 +120,38 @@ export function environment(scene, renderer, camera, cells) {
   water.receiveShadow = true;
   scene.add(water);
   function updateShore(town) {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, 512, 512);
-    ctx.save();
-    ctx.filter = 'blur(7px)';
-    ctx.fillStyle = '#fff';
-    for (const [id, l] of town) {
+    const occupied = new Map(town);
+    for (const id of town.terrain?.keys() || []) occupied.set(id, [0]);
+    coastContext.fillStyle = '#000';
+    coastContext.fillRect(0, 0, maskSize, maskSize);
+    coastContext.fillStyle = '#fff';
+    // Fill the union first, blur once: shared cell boundaries never become foam lines.
+    coastContext.beginPath();
+    for (const [id, l] of occupied) {
       if (l[0] == null) continue;
-      const p = cells[id].points;
-      ctx.beginPath();
-      p.forEach((q, i) => {
-        const x = (q[0] / 80 + 0.5) * 512,
-          y = (-q[1] / 80 + 0.5) * 512;
-        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      const cell = cells[id],
+        record = town.terrain?.get(id);
+      const polygon = [];
+      for (let e = 0; e < 4; e++) {
+        const sea = occupied.get(cell.neighbors[e])?.[0] == null;
+        if (record && sea)
+          for (let k = 0; k < 8; k++) {
+            const q = shorePoint(cell, e, k / 8, -0.025, isBeach(cell, town));
+            polygon.push([q[0], q[2]]);
+          }
+        else polygon.push(cell.points[e]);
+      }
+      polygon.forEach((q, i) => {
+        const x = (q[0] / 80 + 0.5) * maskSize,
+          y = (-q[1] / 80 + 0.5) * maskSize;
+        i ? coastContext.lineTo(x, y) : coastContext.moveTo(x, y);
       });
-      ctx.closePath();
-      ctx.fill();
+      coastContext.closePath();
     }
-    ctx.restore();
+    coastContext.fill();
+    ctx.filter = 'blur(6px)';
+    ctx.drawImage(coastCanvas, 0, 0);
+    ctx.filter = 'none';
     mask.needsUpdate = true;
   }
   function updateBounds(town) {
